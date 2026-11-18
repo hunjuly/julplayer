@@ -15,8 +15,10 @@ private final class PlayerWindow: NSWindow {
     override func animationResizeTime(_ newFrame: NSRect) -> TimeInterval { 0.24 }
 
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .mouseMoved || event.type == .leftMouseDragged {
+        switch event.type {
+        case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
             (contentView as? PlayerHost)?.revealControls()
+        default: break
         }
         if event.type == .scrollWheel, let host = contentView as? PlayerHost, host.adjustVolume(for: event) { return }
         if event.type == .leftMouseDown { mouseDownLocation = convertPoint(toScreen: event.locationInWindow) }
@@ -93,6 +95,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     private var associatingFiles = false
     private let frameSizeKey = "playerWindowFrameSize"
     private var changingFullScreen = false
+    private var cursorHiddenForPlayback = false
     private var requestedSize: (preset: WindowSizePreset, selection: UUID?)?
     private var resizingForPreset = false
     private var videoDrag: VideoWindowDrag?
@@ -165,6 +168,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationWillResignActive(_ notification: Notification) { setPlaybackCursorHidden(false) }
+    func windowDidResignKey(_ notification: Notification) { setPlaybackCursorHidden(false) }
+    func windowDidBecomeKey(_ notification: Notification) { session.reveal() }
     func windowWillClose(_ notification: Notification) { session.setPlaying(false) }
     func windowDidDeminiaturize(_ notification: Notification) {
         if session.pipActive { session.pip?.stop() }
@@ -204,7 +210,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
         proposedOptions.subtracting(.autoHideToolbar)
     }
-    func windowWillExitFullScreen(_ notification: Notification) { changingFullScreen = true }
+    func windowWillExitFullScreen(_ notification: Notification) {
+        changingFullScreen = true
+        setPlaybackCursorHidden(false)
+    }
     func windowDidEnterFullScreen(_ notification: Notification) { finishFullScreenTransition() }
     func windowDidExitFullScreen(_ notification: Notification) { finishFullScreenTransition() }
     func windowDidFailToEnterFullScreen(_ window: NSWindow) { finishFullScreenTransition() }
@@ -219,8 +228,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             guard let self, self.changingFullScreen else { return }
             self.changingFullScreen = false
             self.applyRequestedSize()
-            self.updateWindowState()
             self.session.reveal()
+            self.updateWindowState()
             self.session.pip?.fullScreenTransitionFinished()
         }
     }
@@ -266,6 +275,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        setPlaybackCursorHidden(false)
         rememberWindowSize()
         if let events { NSEvent.removeMonitor(events) }
         window?.delegate = nil
@@ -291,6 +301,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         pinItem?.image = NSImage(systemSymbolName: session.pinWhenPlaying ? "pin.fill" : "pin", accessibilityDescription: "재생 중 항상 위")
         pinItem?.toolTip = session.pinWhenPlaying ? "재생 중 항상 위 끄기" : "재생 중 항상 위 켜기"
         playlistItem?.toolTip = session.showsPlaylist ? "재생목록 닫기 (⌘L)" : "재생목록 보기 (⌘L)"
+        let hideCursor = !visible && session.playing && !session.pipActive && !changingFullScreen
+            && window.styleMask.contains(.fullScreen) && window.isKeyWindow && NSApp.isActive
+            && window.attachedSheet == nil && window.frame.contains(NSEvent.mouseLocation)
+        setPlaybackCursorHidden(hideCursor)
+    }
+
+    private func setPlaybackCursorHidden(_ hidden: Bool) {
+        guard hidden != cursorHiddenForPlayback else { return }
+        cursorHiddenForPlayback = hidden
+        NSCursor.setHiddenUntilMouseMoves(hidden)
     }
 
     private func updateTitle() {
