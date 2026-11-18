@@ -408,6 +408,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         add(play, "자막 켜기 / 끄기", #selector(toggleCaptions), key: "c", modifiers: [], target: self)
         add(play, "오디오 스트림 및 싱크…", #selector(audioPanel), target: self)
         add(play, "자막 스트림 및 싱크…", #selector(subtitlePanel), target: self)
+        let sizeItem = play.addItem(withTitle: "자막 크기", action: nil, keyEquivalent: "")
+        let sizes = NSMenu(title: sizeItem.title)
+        for size in SubtitleSize.allCases {
+            add(sizes, size.title, #selector(chooseSubtitleSize(_:)), target: self).representedObject = size
+        }
+        sizeItem.submenu = sizes
         let view = menu("보기")
         for preset in WindowSizePreset.allCases {
             let item = view.addItem(withTitle: preset.menuTitle, action: #selector(chooseWindowSize(_:)),
@@ -489,6 +495,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     @objc private func toggleMute() { session.toggleMute() }
     @objc private func fullScreen() { window.toggleFullScreen(nil) }
     @objc private func toggleCaptions() { session.toggleCaptions() }
+    @objc private func chooseSubtitleSize(_ sender: NSMenuItem) {
+        if let size = sender.representedObject as? SubtitleSize { session.subtitleSize = size }
+    }
     @objc private func audioPanel() { session.panel = .audio }
     @objc private func subtitlePanel() { session.panel = .subtitle }
     @objc private func previousFile() { session.stepFile(-1) }
@@ -510,6 +519,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(associate(_:)) { return !associatingFiles }
+        if let size = item.representedObject as? SubtitleSize {
+            item.state = size == session.subtitleSize ? .on : .off
+            return true
+        }
         if item.action == #selector(chooseWindowSize(_:)) {
             return window?.isKeyWindow == true && window.attachedSheet == nil && session.panel == nil
                 && !(window.firstResponder is NSTextView) && (item.tag == WindowSizePreset.minimum.rawValue || session.current != nil)

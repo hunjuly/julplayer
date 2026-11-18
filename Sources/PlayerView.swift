@@ -421,6 +421,11 @@ private struct StreamPanel: View {
             }.frame(height: min(174, CGFloat(rows.count + 1) * 30))
             if kind == .subtitle {
                 Button("외부 자막 열기…", action: session.chooseSubtitles).buttonStyle(.link)
+                Picker("자막 크기", selection: $session.subtitleSize) {
+                    ForEach(SubtitleSize.allCases, id: \.self) { size in
+                        Text(size.title).tag(size)
+                    }
+                }.pickerStyle(.menu)
             }
             Divider()
             HStack {

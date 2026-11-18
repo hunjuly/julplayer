@@ -67,7 +67,8 @@ static id nodeValue(const mpv_node *n) {
         NSDictionary *opts = @{@"vo":@"libmpv", @"hwdec":@"videotoolbox-copy", @"config":@"no",
             @"idle":@"yes", @"keep-open":@"yes", @"pause":@"yes", @"osc":@"no",
             @"terminal":@"no", @"load-scripts":@"no", @"sub-auto":@"no", @"audio-file-auto":@"no",
-            @"sub-font":@"Apple SD Gothic Neo", @"sub-font-size":@"36", @"sub-margin-y":@"66",
+            @"sub-font":@"Apple SD Gothic Neo", @"sub-font-size":@"36", @"sub-bold":@"yes",
+            @"sub-ass-style-overrides":@"Bold=1", @"sub-margin-y":@"66",
             @"osd-level":@"0", @"input-default-bindings":@"no"};
         for (NSString *key in opts) mpv_set_option_string(_mpv,key.UTF8String,[opts[key] UTF8String]);
         status = mpv_initialize(_mpv);

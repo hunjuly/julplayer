@@ -18,6 +18,27 @@ enum StreamKind: String, Identifiable, CaseIterable {
     var ordinalKey: String { "streamOrdinal." + rawValue }
     var disabledKey: String { "streamDisabled." + rawValue }
 }
+
+enum SubtitleSize: String, CaseIterable {
+    case small, normal, large
+
+    var title: String {
+        switch self {
+        case .small: return "작게"
+        case .normal: return "보통"
+        case .large: return "크게"
+        }
+    }
+
+    var scale: Double {
+        switch self {
+        case .small: return 1.1
+        case .normal: return 1.35
+        case .large: return 1.6
+        }
+    }
+}
+
 struct MediaStream: Identifiable, Equatable {
     let id: Int
     let kind: StreamKind
@@ -52,6 +73,13 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var position = 0.0
     @Published private(set) var playing = false
     @Published private(set) var volume: Double
+    @Published var subtitleSize: SubtitleSize {
+        didSet {
+            defaults.set(subtitleSize.rawValue, forKey: Self.subtitleSizeKey)
+            _ = engine?.setNumber(subtitleSize.scale, forOption: "sub-scale")
+            reveal()
+        }
+    }
     @Published private(set) var streams: [MediaStream] = []
     @Published private(set) var subtitleDelay = 0.0
     @Published private(set) var audioDelay = 0.0
@@ -94,6 +122,7 @@ final class PlayerSession: ObservableObject {
     private var fileTicket = 0
     private static let volumeKey = "playbackVolume"
     private static let beforeMuteKey = "volumeBeforeMute"
+    private static let subtitleSizeKey = "subtitleSize"
     private let defaults: UserDefaults
     private var sidecarsReady = false
 
@@ -102,6 +131,7 @@ final class PlayerSession: ObservableObject {
         let initialVolume = 0.68
         defaults.register(defaults: [Self.volumeKey: initialVolume, Self.beforeMuteKey: initialVolume])
         volume = defaults.double(forKey: Self.volumeKey)
+        subtitleSize = defaults.string(forKey: Self.subtitleSizeKey).flatMap(SubtitleSize.init(rawValue:)) ?? .normal
         do { engine = try VideoEngine.make() }
         catch { engine = nil; notice = error.localizedDescription }
     }
@@ -110,6 +140,7 @@ final class PlayerSession: ObservableObject {
         if let engine {
             pip = PictureInPicture(session: self, layer: engine.displayLayer)
             _ = engine.setNumber(volume * 100, forOption: "volume")
+            _ = engine.setNumber(subtitleSize.scale, forOption: "sub-scale")
             let clock = Timer(timeInterval: 0.10, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.tick() }
             }
