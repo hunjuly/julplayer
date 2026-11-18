@@ -1,0 +1,8 @@
+.DS_Store
+*.app/
+/Engine/Frameworks/
+/Resources/Lake.mkv
+/Resources/lake.jpg
+/미리보기.jpg
+/재생목록.jpg
+/Artwork/*.prompt.txt

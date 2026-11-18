@@ -1,0 +1,7 @@
+JulPlayer
+Movie playback uses mpv and its FFmpeg-based dependencies from the IINA 1.5.1 release.
+Binary distribution: https://github.com/iina/iina/releases/tag/v1.5.1
+Build recipes and dependency sources: https://github.com/iina/deps
+mpv source and licenses: https://github.com/mpv-player/mpv
+FFmpeg source and licenses: https://ffmpeg.org/
+Sample photograph: Luca Bravo, https://unsplash.com/photos/zAjdgNXsMeg
