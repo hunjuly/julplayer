@@ -174,7 +174,7 @@ private struct Controls: View {
     }
 
     var body: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 0) {
             if !layout.playOnly { timeline }
             HStack(spacing: 0) {
                 row(layout.leading).frame(width: layout.leadingSpan, alignment: .leading)
@@ -186,7 +186,7 @@ private struct Controls: View {
         .shadow(color: .black.opacity(0.82), radius: 1.4, x: 0, y: 0.6)
         .padding(.horizontal, PlaybackControlLayout.inset)
         .frame(maxWidth: .infinity)
-        .frame(height: layout.barHeight)
+        .frame(height: layout.barHeight, alignment: layout.playOnly ? .center : .top)
         .background {
             VideoWindowGestures(fullScreenOnDoubleClick: false).accessibilityHidden(true)
         }
@@ -207,9 +207,10 @@ private struct Controls: View {
     private var timeline: some View {
         HStack(spacing: 10) {
             Text(timecode(session.position))
-            ThinSlider(
+            PlayerSlider(
                 value: session.duration > 0 ? session.position / session.duration : 0,
                 tint: amber, name: "재생 위치", reading: timecode(session.position),
+                trackHeight: 7, thumbDiameter: 14, hitHeight: 32,
                 hoverLabel: { timecode($0 * session.duration) },
                 change: { session.seek(to: $0 * session.duration) },
                 tracking: { session.scrubbing = $0 }
@@ -242,8 +243,8 @@ private struct Controls: View {
         case .mute:
             IconControl(volumeSymbol, label: session.volume == 0 ? "음소거 해제 (M)" : "음소거 (M)", action: session.toggleMute)
         case .volume:
-            ThinSlider(value: session.volume, tint: .white.opacity(0.86), name: "볼륨",
-                       reading: "\(Int(session.volume * 100))%", change: session.setVolume)
+            PlayerSlider(value: session.volume, tint: .white.opacity(0.86), name: "볼륨",
+                         reading: "\(Int(session.volume * 100))%", change: session.setVolume)
         case .audio:
             IconControl("waveform", label: "오디오 스트림 및 싱크") { session.panel = .audio }
         case .subtitles:
@@ -337,11 +338,14 @@ private struct PlayButtonStyle: ButtonStyle {
     }
 }
 
-private struct ThinSlider: View {
+private struct PlayerSlider: View {
     let value: Double
     let tint: Color
     let name: String
     let reading: String
+    var trackHeight: CGFloat = 3
+    var thumbDiameter: CGFloat = 8
+    var hitHeight: CGFloat = 21
     var hoverLabel: ((Double) -> String)?
     let change: (Double) -> Void
     var tracking: (Bool) -> Void = { _ in }
@@ -350,20 +354,23 @@ private struct ThinSlider: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let inset: CGFloat = 5
+            let activeThumbDiameter = thumbDiameter + 2
+            let inset = activeThumbDiameter / 2
             let span = max(1, proxy.size.width - 2 * inset)
             let fraction = min(1, max(0, value))
             let x = inset + fraction * span
             let y = proxy.size.height / 2
             let prominent = hover != nil || dragging
+            let thickness = prominent ? trackHeight + 1 : trackHeight
+            let diameter = prominent ? activeThumbDiameter : thumbDiameter
             ZStack {
                 Capsule().fill(.white.opacity(0.40))
-                    .frame(width: span, height: prominent ? 4 : 3)
+                    .frame(width: span, height: thickness)
                     .position(x: inset + span / 2, y: y)
                 Capsule().fill(tint)
-                    .frame(width: span * fraction, height: prominent ? 4 : 3)
+                    .frame(width: span * fraction, height: thickness)
                     .position(x: inset + span * fraction / 2, y: y)
-                Circle().fill(tint).frame(width: prominent ? 10 : 8, height: prominent ? 10 : 8)
+                Circle().fill(tint).frame(width: diameter, height: diameter)
                     .position(x: x, y: y)
                 if let hover, let hoverLabel {
                     Text(hoverLabel(hover)).font(.system(size: 10, weight: .medium, design: .monospaced))
@@ -388,7 +395,7 @@ private struct ThinSlider: View {
                 }
                 .onEnded { _ in dragging = false; tracking(false) })
         }
-        .frame(height: 21)
+        .frame(height: hitHeight)
         .accessibilityRepresentation {
             Slider(value: Binding(get: { value }, set: change), in: 0...1) { Text(name) }
                 .accessibilityValue(reading)
