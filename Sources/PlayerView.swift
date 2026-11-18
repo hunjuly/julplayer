@@ -1,5 +1,4 @@
 import AppKit
-import QuickLookThumbnailing
 import SwiftUI
 
 // Use SwiftUI's property wrapper when building with the standalone Command Line Tools.
@@ -23,6 +22,7 @@ struct PlayerView: View {
             let inline = PlayerWindowLayout.fitsSidebar(in: area.size.width)
             HStack(spacing: 0) {
                 video
+                    .ignoresSafeArea(.container, edges: .top)
                     .accessibilityHidden(session.showsPlaylist && !inline)
                 if session.showsPlaylist && inline {
                     Divider().frame(width: 1)
@@ -33,19 +33,19 @@ struct PlayerView: View {
                 if session.showsPlaylist && !inline {
                     ZStack(alignment: .trailing) {
                         Color.black.opacity(0.45).onTapGesture { session.showsPlaylist = false }
-                        Playlist(session: session, overlaysVideo: true).frame(width: PlayerWindowLayout.playlistWidth)
+                        Playlist(session: session).frame(width: PlayerWindowLayout.playlistWidth)
                     }
                 }
             }
         }
         .overlay {
-            if session.dropTarget {
+            if let hint = session.dropHint {
                 ZStack {
                     Color.black.opacity(0.65)
                     RoundedRectangle(cornerRadius: 14)
                         .strokeBorder(amber, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
                         .padding(12)
-                    Label("재생목록에 추가", systemImage: "plus.rectangle.on.rectangle")
+                    Text(hint)
                         .font(.title3.weight(.semibold))
                 }
                 .allowsHitTesting(false)
@@ -57,7 +57,7 @@ struct PlayerView: View {
 
     private var video: some View {
         GeometryReader { proxy in
-            let density = ControlDensity(width: proxy.size.width)
+            let layout = PlaybackControlLayout(width: proxy.size.width)
             let minimum = PlayerWindowLayout.minimumContent
             let atMinimum = proxy.size.width <= minimum.width + 1 && proxy.size.height <= minimum.height + 1
             let smallPicture = atMinimum ? session.smallPictureSize : nil
@@ -69,7 +69,7 @@ struct PlayerView: View {
                     if session.selection == nil {
                         VStack(spacing: 10) {
                             Button { session.openFiles() } label: {
-                                Label("동영상 열기", systemImage: "folder")
+                                Text("동영상 열기")
                                     .font(.system(size: 13, weight: .semibold))
                                     .padding(.horizontal, 16).frame(height: 36)
                                     .background(.white.opacity(0.12), in: Capsule())
@@ -107,13 +107,13 @@ struct PlayerView: View {
                 if session.selection != nil {
                     ZStack(alignment: .bottom) {
                         if session.controlsVisible {
-                            Controls(session: session, density: density)
+                            Controls(session: session, layout: layout)
                                 .onHover { session.overControls = $0 }
                                 .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    .frame(height: density.barHeight, alignment: .bottom)
+                    .frame(height: layout.barHeight, alignment: .bottom)
                     .allowsHitTesting(session.controlsVisible)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: session.controlsVisible)
                     .popover(item: $session.panel, attachmentAnchor: .point(.top), arrowEdge: .bottom) { kind in
@@ -162,26 +162,9 @@ private struct VideoWindowGestures: NSViewRepresentable {
     }
 }
 
-private enum ControlDensity: Int, Comparable {
-    case play, seek, files, extended, full
-
-    init(width: CGFloat) {
-        switch width {
-        case ..<PlayerWindowLayout.seekControlsWidth: self = .play
-        case ..<PlayerWindowLayout.fileControlsWidth: self = .seek
-        case ..<PlayerWindowLayout.extendedControlsWidth: self = .files
-        case ..<760: self = .extended
-        default: self = .full
-        }
-    }
-
-    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
-    var barHeight: CGFloat { self == .play ? 44 : 68 }
-}
-
 private struct Controls: View {
     @ObservedObject var session: PlayerSession
-    let density: ControlDensity
+    let layout: PlaybackControlLayout
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -192,17 +175,18 @@ private struct Controls: View {
 
     var body: some View {
         VStack(spacing: 2) {
-            if density >= .seek { timeline }
-            ZStack {
-                if density >= .files { tools }
-                transport
+            if !layout.playOnly { timeline }
+            HStack(spacing: 0) {
+                row(layout.leading).frame(width: layout.leadingSpan, alignment: .leading)
+                row(layout.transport)
+                row(layout.trailing).frame(width: layout.trailingSpan, alignment: .trailing)
             }
             .frame(maxWidth: .infinity)
         }
         .shadow(color: .black.opacity(0.82), radius: 1.4, x: 0, y: 0.6)
-        .padding(.horizontal, density >= .extended ? 18 : 12)
+        .padding(.horizontal, PlaybackControlLayout.inset)
         .frame(maxWidth: .infinity)
-        .frame(height: density.barHeight)
+        .frame(height: layout.barHeight)
         .background {
             VideoWindowGestures(fullScreenOnDoubleClick: false).accessibilityHidden(true)
         }
@@ -217,7 +201,7 @@ private struct Controls: View {
                 ], startPoint: .top, endPoint: .bottom)
             }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.14), value: density)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.14), value: layout.transport)
     }
 
     private var timeline: some View {
@@ -243,56 +227,54 @@ private struct Controls: View {
         .foregroundStyle(.white.opacity(0.96))
     }
 
-    private var tools: some View {
-        HStack(spacing: 5) {
+    private func row(_ items: [PlaybackControlLayout.Item]) -> some View {
+        HStack(spacing: PlaybackControlLayout.spacing) {
+            ForEach(items, id: \.self) { item in
+                control(item).frame(width: item.width)
+            }
+        }
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private func control(_ item: PlaybackControlLayout.Item) -> some View {
+        switch item {
+        case .mute:
             IconControl(volumeSymbol, label: session.volume == 0 ? "음소거 해제 (M)" : "음소거 (M)", action: session.toggleMute)
-            if density >= .extended {
-                ThinSlider(value: session.volume, tint: .white.opacity(0.86),
-                           name: "볼륨", reading: "\(Int(session.volume * 100))%", change: session.setVolume)
-                    .frame(width: 60)
-            }
-            Spacer(minLength: 0)
-            if density == .full {
-                IconControl("waveform", label: "오디오 스트림 및 싱크") { session.panel = .audio }
-            }
-            if density >= .extended {
-                let captionsOn = session.streams.contains { $0.kind == .subtitle && $0.selected }
-                IconControl(captionsOn ? "captions.bubble.fill" : "captions.bubble", label: "자막 스트림 및 싱크") {
-                    session.panel = .subtitle
-                }
-            }
-            IconControl("arrow.up.left.and.arrow.down.right", label: "전체 화면 전환 (F / Enter)", size: 15) {
-                session.window?.toggleFullScreen(nil)
-            }
-            if density == .full {
-                Divider().frame(height: 15).padding(.horizontal, 3)
+        case .volume:
+            ThinSlider(value: session.volume, tint: .white.opacity(0.86), name: "볼륨",
+                       reading: "\(Int(session.volume * 100))%", change: session.setVolume)
+        case .audio:
+            IconControl("waveform", label: "오디오 스트림 및 싱크") { session.panel = .audio }
+        case .subtitles:
+            let on = session.streams.contains { $0.kind == .subtitle && $0.selected }
+            IconControl(on ? "captions.bubble.fill" : "captions.bubble", label: "자막 스트림 및 싱크") { session.panel = .subtitle }
+        case .trash:
+            HStack(spacing: 0) {
+                Divider().frame(height: 15)
+                Spacer(minLength: 0)
                 IconControl("trash", label: "현재 영상과 자막 삭제 (⌫)", size: 15) { session.trashCurrent() }
                     .disabled(session.trashInProgress)
             }
-        }
-    }
-
-    private var transport: some View {
-        HStack(spacing: density >= .extended ? 8 : 5) {
-            if density >= .files { fileButton(-1) }
-            if density >= .extended { seekButton(-30) }
-            if density >= .seek { seekButton(-10) }
+        case .previous: fileButton(-1)
+        case .next: fileButton(1)
+        case .back30: seekButton(-30)
+        case .back10: seekButton(-10)
+        case .ahead10: seekButton(10)
+        case .ahead30: seekButton(30)
+        case .play:
             Button(action: session.togglePlay) {
                 Image(systemName: session.playing ? "pause.fill" : "play.fill")
                     .font(.system(size: 14, weight: .bold))
                     .offset(x: session.playing ? 0 : 1)
                     .foregroundStyle(Color(white: 0.10))
-                    .frame(width: 32, height: 32)
+                    .frame(width: item.width, height: item.width)
                     .background(Color(white: 0.96), in: Circle())
             }
             .buttonStyle(PlayButtonStyle())
             .accessibilityLabel(session.playing ? "일시 정지" : "재생")
             .help(session.playing ? "일시 정지 (Space)" : "재생 (Space)")
-            if density >= .seek { seekButton(10) }
-            if density >= .extended { seekButton(30) }
-            if density >= .files { fileButton(1) }
         }
-        .fixedSize()
     }
 
     private func fileButton(_ direction: Int) -> some View {
@@ -317,18 +299,16 @@ private struct IconControl: View {
     let symbol: String
     let label: String
     var size: CGFloat = 16
-    var highlighted = false
     let action: () -> Void
-    init(_ symbol: String, label: String, size: CGFloat = 16, highlighted: Bool = false,
-         action: @escaping () -> Void) {
+    init(_ symbol: String, label: String, size: CGFloat = 16, action: @escaping () -> Void) {
         self.symbol = symbol; self.label = label; self.size = size
-        self.highlighted = highlighted; self.action = action
+        self.action = action
     }
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: size, weight: .medium))
-                .foregroundStyle(highlighted ? amber : .white.opacity(0.93))
-                .frame(width: 29, height: 30)
+                .foregroundStyle(.white.opacity(0.93))
+                .frame(width: PlaybackControlLayout.iconWidth, height: 30)
         }
         .buttonStyle(HUDButtonStyle()).help(label).accessibilityLabel(label)
     }
@@ -427,8 +407,8 @@ private struct StreamPanel: View {
             ScrollView {
                 VStack(spacing: 1) {
                     ChoiceRow(title: "끔", selected: !rows.contains(where: \.selected)) { session.selectStream(kind, id: -1) }
-                    ForEach(rows) { row in
-                        ChoiceRow(title: row.title, selected: row.selected) { session.selectStream(kind, id: row.id) }
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                        ChoiceRow(title: "\(index + 1)번 · \(row.title)", selected: row.selected) { session.selectStream(kind, id: row.id) }
                     }
                 }
             }.frame(height: min(174, CGFloat(rows.count + 1) * 30))
@@ -475,67 +455,35 @@ private struct ChoiceRow: View {
 
 private struct Playlist: View {
     @ObservedObject var session: PlayerSession
-    var overlaysVideo = false
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("재생목록").font(.system(size: 15, weight: .semibold))
-                Spacer()
-                IconControl("plus", label: "파일 추가", size: 14, action: { session.openFiles(appendToList: true) })
-                if overlaysVideo {
-                    IconControl("xmark", label: "재생목록 닫기", size: 13) { session.showsPlaylist = false }
-                }
-            }
-            .padding(.horizontal, 15).padding(.vertical, 10)
-            Divider()
+        ScrollViewReader { reader in
             ScrollView {
-                LazyVStack(spacing: 3) {
+                LazyVStack(spacing: 2) {
                     ForEach(session.clips) { clip in
                         let selected = session.selection == clip.id
+                        let name = clip.url.lastPathComponent
                         Button { session.select(clip) } label: {
-                            HStack(spacing: 9) {
-                                ClipThumbnail(clip: clip)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(clip.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                                    Text(clip.duration.map(timecode) ?? clip.url.pathExtension.uppercased())
-                                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                                }
+                            HStack(spacing: 8) {
+                                Text(name).lineLimit(1).truncationMode(.middle)
                                 Spacer(minLength: 0)
-                                if selected {
-                                    Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(amber)
-                                }
+                                if selected { Image(systemName: "checkmark").foregroundStyle(amber) }
                             }
-                            .padding(7)
-                            .background(selected ? .white.opacity(0.075) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                            .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                            .padding(.horizontal, 9).frame(height: 30)
+                            .background(selected ? .white.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 6))
                         }
-                        .buttonStyle(HUDButtonStyle()).accessibilityAddTraits(selected ? .isSelected : [])
+                        .buttonStyle(HUDButtonStyle()).help(name)
+                        .accessibilityLabel(name).accessibilityAddTraits(selected ? .isSelected : [])
                     }
                 }
-                .padding(8)
+                .padding(6)
             }
+            .onAppear { if let id = session.selection { reader.scrollTo(id, anchor: .center) } }
+            .onChange(of: session.selection) { id in if let id { reader.scrollTo(id, anchor: .center) } }
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Color(red: 0.09, green: 0.095, blue: 0.105))
-    }
-}
-
-private struct ClipThumbnail: View {
-    let clip: Clip
-    @ViewState private var thumbnail: NSImage?
-    var body: some View {
-        ZStack {
-            Color(white: 0.16)
-            if let image = thumbnail {
-                Image(nsImage: image).resizable().scaledToFill()
-            } else { Image(systemName: "film") }
-        }
-        .frame(width: 55, height: 36).clipShape(RoundedRectangle(cornerRadius: 5))
-        .task(id: clip.id) {
-            thumbnail = nil
-            let request = QLThumbnailGenerator.Request(fileAt: clip.url, size: CGSize(width: 110,height: 72),
-                                                       scale: 1, representationTypes: .thumbnail)
-            let result = try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: request)
-            if !Task.isCancelled { thumbnail = result?.nsImage }
-        }
+        .accessibilityLabel("재생목록")
     }
 }

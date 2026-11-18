@@ -68,7 +68,7 @@ static id nodeValue(const mpv_node *n) {
             @"idle":@"yes", @"keep-open":@"yes", @"pause":@"yes", @"osc":@"no",
             @"terminal":@"no", @"load-scripts":@"no", @"sub-auto":@"no", @"audio-file-auto":@"no",
             @"sub-font":@"Apple SD Gothic Neo", @"sub-font-size":@"36", @"sub-margin-y":@"66",
-            @"slang":@"ko,kor,en,eng", @"osd-level":@"0", @"input-default-bindings":@"no"};
+            @"osd-level":@"0", @"input-default-bindings":@"no"};
         for (NSString *key in opts) mpv_set_option_string(_mpv,key.UTF8String,[opts[key] UTF8String]);
         status = mpv_initialize(_mpv);
         if (status >= 0) {
@@ -260,13 +260,7 @@ static id nodeValue(const mpv_node *n) {
             dispatch_async(_queue, ^{ [self sizeToWidth:width height:height]; [self renderFrame:YES]; });
         }
     }
-    if (dirty) {
-        mpv_node tracks;
-        if (mpv_get_property(_mpv,"track-list",MPV_FORMAT_NODE,&tracks) >= 0) {
-            out[@"tracks"] = nodeValue(&tracks);
-            mpv_free_node_contents(&tracks);
-        }
-    }
+    if (dirty) out[@"tracks"] = [self trackList];
     double time = 0, duration = 0;
     int paused = 1, eof = 0;
     if (mpv_get_property(_mpv,"time-pos",MPV_FORMAT_DOUBLE,&time) >= 0) out[@"position"] = @(time);
@@ -280,6 +274,14 @@ static id nodeValue(const mpv_node *n) {
         CMTimebaseSetRate(_clock,rate);
     }
     return out;
+}
+
+- (NSArray<NSDictionary<NSString *, id> *> *)trackList {
+    mpv_node tracks;
+    if (!_mpv || !_loaded || mpv_get_property(_mpv,"track-list",MPV_FORMAT_NODE,&tracks) < 0) return nil;
+    NSArray *rows = nodeValue(&tracks);
+    mpv_free_node_contents(&tracks);
+    return rows;
 }
 
 - (void)setPaused:(BOOL)paused {
@@ -304,7 +306,7 @@ static id nodeValue(const mpv_node *n) {
 }
 - (BOOL)addSubtitle:(NSString *)path select:(BOOL)select {
     if (!_mpv) return NO;
-    const char *args[] = {"sub-add",path.fileSystemRepresentation,select ? "select" : "auto",NULL};
+    const char *args[] = {"sub-add",path.fileSystemRepresentation,select ? "cached" : "auto",NULL};
     return mpv_command(_mpv,args) >= 0;
 }
 - (void)stop {

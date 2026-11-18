@@ -11,25 +11,29 @@ struct Clip: Identifiable {
     init(file: URL) { url = file }
 }
 
-enum StreamKind: String, Identifiable {
+enum StreamKind: String, Identifiable, CaseIterable {
     case subtitle = "sub", audio = "audio"
     var id: Self { self }
+    var trackProperty: String { self == .audio ? "aid" : "sid" }
+    var ordinalKey: String { "streamOrdinal." + rawValue }
+    var disabledKey: String { "streamDisabled." + rawValue }
 }
 struct MediaStream: Identifiable, Equatable {
     let id: Int
     let kind: StreamKind
     let title: String
-    let selected: Bool
+    var selected: Bool
+    let externalURL: URL?
     init?(_ entry: [String: Any]) {
         guard let key = entry["type"] as? String, let kind = StreamKind(rawValue: key), let id = entry["id"] as? Int else { return nil }
         self.kind = kind; self.id = id
         selected = entry["selected"] as? Bool == true
         let locale = Locale(identifier: "ko")
         let language = (entry["lang"] as? String).flatMap { locale.localizedString(forLanguageCode: $0) ?? $0 }
-        let external = (entry["external-filename"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent }
+        externalURL = (entry["external-filename"] as? String).map { URL(fileURLWithPath: $0).standardizedFileURL }
         var parts = [entry["title"] as? String, language].compactMap { $0 }.filter { !$0.isEmpty }
         if parts.count == 2 && parts[0] == parts[1] { parts.removeLast() }
-        if parts.isEmpty { parts = [external ?? "트랙 \(id)"] }
+        if parts.isEmpty { parts = [externalURL?.lastPathComponent ?? "트랙 \(id)"] }
         if let codec = entry["codec"] as? String, kind == .audio { parts.append(codec.uppercased()) }
         title = parts.joined(separator: " · ")
     }
@@ -54,8 +58,8 @@ final class PlayerSession: ObservableObject {
     @Published var panel: StreamKind? { didSet { reveal() } }
     @Published var showsRemaining = false
     @Published var showsPlaylist = false { didSet { reveal(); windowStateChanged?() } }
-    @Published var dropTarget = false
-    @Published private(set) var controlsVisible = true
+    @Published var dropHint: String?
+    @Published private(set) var controlsVisible = true { didSet { windowStateChanged?() } }
     @Published var pinWhenPlaying = UserDefaults.standard.bool(forKey: "pinWhenPlaying") {
         didSet { UserDefaults.standard.set(pinWhenPlaying, forKey: "pinWhenPlaying"); windowStateChanged?() }
     }
@@ -80,15 +84,20 @@ final class PlayerSession: ObservableObject {
     private var lastSeek: TimeInterval = 0
     private var noticeEnds = TimeInterval.infinity
     private var timer: Timer?
+    private var playbackActivity: NSObjectProtocol?
     private var beforeMute = 0.68
     private var folderScan: Task<Void, Never>?
     // mpv can pause itself on the last frame before the next poll reports EOF.
     private var playRequested = false
     private var ended = false
     private var manualSubs: [URL: [URL]] = [:]
+    private var pendingSubtitles = [URL]()
     private var fileTicket = 0
+    private let streamDefaults: UserDefaults
+    private var sidecarsReady = false
 
-    init() {
+    init(streamDefaults: UserDefaults = .standard) {
+        self.streamDefaults = streamDefaults
         do { engine = try VideoEngine.make() }
         catch { engine = nil; notice = error.localizedDescription }
     }
@@ -103,7 +112,7 @@ final class PlayerSession: ObservableObject {
             timer = clock
             RunLoop.main.add(clock, forMode: .common)
         }
-        if !urls.isEmpty { openFromFinder(urls) }
+        if !urls.isEmpty { openMedia(urls) }
     }
     func finish() {
         timer?.invalidate(); timer = nil
@@ -132,9 +141,9 @@ final class PlayerSession: ObservableObject {
             show("재생할 수 없습니다. \(current.title) (\(error))", seconds: 12)
             pip?.invalidate(); return
         }
-        if changes["loaded"] as? Bool == true {
+        let justLoaded = changes["loaded"] as? Bool == true
+        if justLoaded {
             loaded = true; ended = false
-            engine?.setPaused(!playRequested)
             attachSidecars(for: current.url, ticket: fileTicket)
             pip?.invalidate()
         }
@@ -146,9 +155,9 @@ final class PlayerSession: ObservableObject {
             }
         }
         if let rows = changes["tracks"] as? [[String: Any]] {
-            let values = rows.compactMap(MediaStream.init)
-            if values != streams { streams = values }
+            applyStreamChoices(to: rows.compactMap(MediaStream.init))
         }
+        if justLoaded { engine?.setPaused(!playRequested) }
         if let seconds = changes["duration"] as? Double, seconds.isFinite, seconds > 0,
            let i = clips.firstIndex(where: { $0.id == selection }), clips[i].duration != seconds {
             clips[i].duration = seconds; pip?.invalidate()
@@ -164,7 +173,8 @@ final class PlayerSession: ObservableObject {
             ended = eof
         }
         advanceAfterEnd()
-        if playing && controlsVisible && !overControls && !scrubbing && !showsPlaylist && panel == nil && now-lastInteraction > 2.8 {
+        if playing && controlsVisible && !overControls && !scrubbing && !showsPlaylist && panel == nil
+            && window?.attachedSheet == nil && now-lastInteraction > 2.8 {
             controlsVisible = false
         }
     }
@@ -176,15 +186,28 @@ final class PlayerSession: ObservableObject {
     }
 
     private func setPlayingUI(_ value: Bool) {
-        if playing != value { playing = value; if !value { reveal() }; windowStateChanged?(); pip?.invalidate() }
+        guard playing != value else { return }
+        playing = value
+        if value {
+            playbackActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled], reason: "JulPlayer video playback")
+        } else {
+            if let playbackActivity { ProcessInfo.processInfo.endActivity(playbackActivity) }
+            playbackActivity = nil
+            reveal()
+        }
+        windowStateChanged?()
+        pip?.invalidate()
     }
     func setPlaying(_ value: Bool) {
         guard let current else { return }
         playRequested = value
         if value && ended && !loaded { select(current); return }
         if value && loaded && (ended || (duration > 0 && position >= duration - 0.08)) { seek(to: 0) }
-        engine?.setPaused(!value)
-        if loaded { setPlayingUI(value) }
+        if loaded {
+            engine?.setPaused(!value)
+            setPlayingUI(value)
+        }
         reveal()
     }
     func togglePlay() {
@@ -203,13 +226,46 @@ final class PlayerSession: ObservableObject {
     func toggleMute() {
         if volume > 0 { beforeMute = volume; setVolume(0) } else { setVolume(beforeMute) }
     }
+    private func ordinal(for kind: StreamKind, count: Int) -> Int {
+        let saved = streamDefaults.integer(forKey: kind.ordinalKey)
+        return saved > 0 && saved <= count ? saved : 1
+    }
+
+    private func applyStreamChoices(to tracks: [MediaStream]) {
+        var values = tracks
+        for kind in StreamKind.allCases {
+            let options = tracks.filter { $0.kind == kind }
+            guard !options.isEmpty else { continue }
+            let number = ordinal(for: kind, count: options.count)
+            let disabled = streamDefaults.bool(forKey: kind.disabledKey)
+            let target = disabled ? -1 : options[number - 1].id
+            if (options.first(where: \.selected)?.id ?? -1) != target {
+                guard engine?.selectTrack(target, property: kind.trackProperty) == true else { continue }
+                for i in values.indices where values[i].kind == kind { values[i].selected = values[i].id == target }
+            }
+            // External subtitles can add the saved slot after the embedded tracks arrive.
+            if !disabled, kind == .audio || sidecarsReady, number != streamDefaults.integer(forKey: kind.ordinalKey) {
+                streamDefaults.set(number, forKey: kind.ordinalKey)
+            }
+        }
+        if values != streams { streams = values }
+    }
+
     func selectStream(_ kind: StreamKind, id: Int) {
-        if engine?.selectTrack(id, property: kind == .audio ? "aid" : "sid") != true { show("스트림을 전환할 수 없습니다.") }
+        let choices = streams.filter { $0.kind == kind }
+        let index = choices.firstIndex { $0.id == id }
+        guard loaded, id < 0 || index != nil else { return }
+        guard engine?.selectTrack(id, property: kind.trackProperty) == true else { show("스트림을 전환할 수 없습니다."); return }
+        if let index { streamDefaults.set(index + 1, forKey: kind.ordinalKey) }
+        streamDefaults.set(id < 0, forKey: kind.disabledKey)
+        if let rows = engine?.trackList() { applyStreamChoices(to: rows.compactMap(MediaStream.init)) }
         reveal()
     }
     func toggleCaptions() {
         let subs = streams.filter { $0.kind == .subtitle }
-        if let first = subs.first { selectStream(.subtitle, id: subs.contains(where: \.selected) ? -1 : first.id) }
+        guard !subs.isEmpty else { return }
+        let index = ordinal(for: .subtitle, count: subs.count) - 1
+        selectStream(.subtitle, id: subs.contains(where: \.selected) ? -1 : subs[index].id)
     }
     func setDelay(_ kind: StreamKind, seconds: Double) {
         guard seconds.isFinite else { return }
@@ -224,6 +280,8 @@ final class PlayerSession: ObservableObject {
 
     func select(_ clip: Clip?) {
         fileTicket += 1
+        sidecarsReady = false
+        pendingSubtitles.removeAll()
         playRequested = clip != nil
         videoDisplaySize = nil
         smallPictureSize = nil
@@ -233,7 +291,7 @@ final class PlayerSession: ObservableObject {
         if engine != nil { notice = nil }
         reveal(); selectionDidChange?(); pip?.invalidate()
         guard let clip else { pip?.stop(); engine?.stop(); return }
-        if let engine, !engine.load(clip.url.path, paused: false) {
+        if let engine, !engine.load(clip.url.path, paused: true) {
             playRequested = false
             show("파일을 열 수 없습니다. \(clip.title)")
         }
@@ -244,38 +302,32 @@ final class PlayerSession: ObservableObject {
     }
     func stepFile(_ offset: Int) { if let clip = adjacent(offset) { select(clip) } }
 
-    func openFromFinder(_ input: [URL]) {
+    func openMedia(_ input: [URL]) {
         let files = input.map(\.standardizedFileURL).filter(LocalMedia.isVideo)
-        guard let first = files.first else { addSubtitles(input.filter(LocalMedia.isSubtitle)); return }
+        let subtitles = input.map(\.standardizedFileURL).filter(LocalMedia.isSubtitle)
+        guard let first = files.first else { addSubtitles(subtitles); return }
         folderScan?.cancel()
         let clip = Clip(file: first)
         clips = [clip]; select(clip)
+        pendingSubtitles = subtitles
         folderScan = Task {
             let found = await Task.detached(priority: .userInitiated) { LocalMedia.folderPlaylist(for: files) }.value
             guard !Task.isCancelled else { return }
             let known = Dictionary(clips.map { ($0.url, $0) }, uniquingKeysWith: { a,_ in a })
-            let inFolder = Set(found)
-            let appended = clips.filter { !inFolder.contains($0.url) }
-            clips = found.map { known[$0] ?? Clip(file: $0) } + appended
+            clips = found.map { known[$0] ?? Clip(file: $0) }
             folderScan = nil
             advanceAfterEnd()
         }
     }
 
-    func append(_ urls: [URL]) {
-        let videos = urls.map(\.standardizedFileURL).filter(LocalMedia.isVideo)
-        if current == nil, !videos.isEmpty { openFromFinder(videos); return }
-        for url in videos where !clips.contains(where: { $0.url == url }) { clips.append(Clip(file: url)) }
-        addSubtitles(urls.filter(LocalMedia.isSubtitle))
-    }
-    func openFiles(appendToList: Bool = false) {
+    func openFiles() {
         guard let window, window.attachedSheet == nil else { return }
         let panel = NSOpenPanel()
-        panel.title = appendToList ? "재생목록에 추가" : "동영상 열기"
+        panel.title = "동영상 열기"
         panel.allowsMultipleSelection = true; panel.canChooseDirectories = false; panel.allowedContentTypes = LocalMedia.types
         panel.beginSheetModal(for: window) { [weak self] reply in
             guard reply == .OK else { return }
-            if appendToList { self?.append(panel.urls) } else { self?.openFromFinder(panel.urls) }
+            self?.openMedia(panel.urls)
         }
     }
     func chooseSubtitles() {
@@ -286,25 +338,40 @@ final class PlayerSession: ObservableObject {
         picker.beginSheetModal(for: window) { [weak self] answer in if answer == .OK { self?.addSubtitles(picker.urls) } }
     }
     private func addSubtitles(_ urls: [URL]) {
-        guard loaded else { return }
+        guard current != nil, !urls.isEmpty else { return }
+        guard loaded && sidecarsReady else { pendingSubtitles += urls; return }
         for url in urls where LocalMedia.isSubtitle(url) {
             if engine?.addSubtitle(url.path, select: true) == true, let movie = current?.url {
                 var prior = manualSubs[movie, default: []]
                 if !prior.contains(url) { prior.append(url); manualSubs[movie] = prior }
+                if let rows = engine?.trackList() {
+                    let tracks = rows.compactMap(MediaStream.init)
+                    let subtitles = tracks.filter { $0.kind == .subtitle }
+                    if let index = subtitles.firstIndex(where: { $0.externalURL == url.standardizedFileURL }) {
+                        streamDefaults.set(index + 1, forKey: StreamKind.subtitle.ordinalKey)
+                        streamDefaults.set(false, forKey: StreamKind.subtitle.disabledKey)
+                    }
+                    applyStreamChoices(to: tracks)
+                }
             }
         }
     }
     private func attachSidecars(for movie: URL, ticket: Int) {
         Task {
             let files = await Task.detached(priority: .userInitiated) { LocalMedia.sidecars(for: movie) }.value
-            guard ticket == fileTicket else { return }
-            var used = Set<URL>()
+            guard ticket == fileTicket, loaded, let engine else { return }
+            var used = Set(streams.compactMap(\.externalURL))
             let all = files + manualSubs[movie, default: []]
             for url in all where used.insert(url.standardizedFileURL).inserted {
                 // VobSub's .idx loads the companion .sub by itself.
                 if url.pathExtension.lowercased() == "sub" && all.contains(where: { $0.deletingPathExtension() == url.deletingPathExtension() && $0.pathExtension.lowercased() == "idx" }) { continue }
-                _ = engine?.addSubtitle(url.path, select: used.count == 1)
+                _ = engine.addSubtitle(url.path, select: false)
             }
+            sidecarsReady = true
+            if let rows = engine.trackList() { applyStreamChoices(to: rows.compactMap(MediaStream.init)) }
+            let requested = pendingSubtitles
+            pendingSubtitles.removeAll()
+            addSubtitles(requested)
         }
     }
 

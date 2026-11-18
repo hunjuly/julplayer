@@ -8,6 +8,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable instancetype)initWithError:(NSError **)error;
 - (BOOL)load:(NSString *)path paused:(BOOL)paused;
 - (NSDictionary<NSString *,id> *)poll;
+- (nullable NSArray<NSDictionary<NSString *,id> *> *)trackList;
 - (void)setPictureInPictureDisplayLayer:(nullable AVSampleBufferDisplayLayer *)layer;
 - (void)setPaused:(BOOL)paused;
 - (void)seek:(double)seconds;

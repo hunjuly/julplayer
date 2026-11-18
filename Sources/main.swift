@@ -2,9 +2,9 @@ import AppKit
 import SwiftUI
 
 private extension NSToolbarItem.Identifier {
-    static let openFile = Self("openFile")
-    static let pin = Self("pin")
+    static let filename = Self("filename")
     static let pip = Self("pip")
+    static let pin = Self("pin")
     static let playlist = Self("playlist")
 }
 
@@ -15,6 +15,9 @@ private final class PlayerWindow: NSWindow {
     override func animationResizeTime(_ newFrame: NSRect) -> TimeInterval { 0.24 }
 
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .mouseMoved || event.type == .leftMouseDragged {
+            (contentView as? PlayerHost)?.revealControls()
+        }
         if event.type == .scrollWheel, let host = contentView as? PlayerHost, host.adjustVolume(for: event) { return }
         if event.type == .leftMouseDown { mouseDownLocation = convertPoint(toScreen: event.locationInWindow) }
         super.sendEvent(event)
@@ -33,6 +36,8 @@ private final class PlayerWindow: NSWindow {
 private final class PlayerHost: NSHostingView<PlayerView> {
     private var session: PlayerSession { rootView.session }
     override var acceptsFirstResponder: Bool { true }
+
+    func revealControls() { session.reveal() }
 
     func adjustVolume(for event: NSEvent) -> Bool {
         guard session.loaded, !session.pipActive, session.panel == nil, window?.attachedSheet == nil,
@@ -56,17 +61,21 @@ private final class PlayerHost: NSHostingView<PlayerView> {
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        session.dropTarget = !files(from: sender).isEmpty
-        return session.dropTarget ? .copy : []
+        let urls = files(from: sender)
+        if urls.contains(where: LocalMedia.isVideo) { session.dropHint = "놓아서 동영상 재생" }
+        else if session.current != nil && !urls.isEmpty { session.dropHint = "놓아서 자막 열기" }
+        else { session.dropHint = nil }
+        return session.dropHint == nil ? [] : .copy
     }
 
-    override func draggingExited(_ sender: NSDraggingInfo?) { session.dropTarget = false }
+    override func draggingExited(_ sender: NSDraggingInfo?) { session.dropHint = nil }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        session.dropTarget = false
+        session.dropHint = nil
         let urls = files(from: sender)
-        session.append(urls)
-        return !urls.isEmpty
+        guard !urls.isEmpty, session.current != nil || urls.contains(where: LocalMedia.isVideo) else { return false }
+        session.openMedia(urls)
+        return true
     }
 }
 
@@ -74,13 +83,13 @@ private final class PlayerHost: NSHostingView<PlayerView> {
 private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSWindowDelegate, NSMenuItemValidation {
     let session = PlayerSession()
     private var window: PlayerWindow!
+    private let filename = NSTextField(labelWithString: "")
     private var events: Any?
-    private var playlistItem: NSToolbarItem?
-    private var pinItem: NSToolbarItem?
     private var pipItem: NSToolbarItem?
+    private var pinItem: NSToolbarItem?
+    private var playlistItem: NSToolbarItem?
     private var pendingURLs = [URL]()
     private var ready = false
-    private var updatingToolbar = false
     private var associatingFiles = false
     private let frameSizeKey = "playerWindowFrameSize"
     private var changingFullScreen = false
@@ -94,12 +103,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let width = min(1040, screen.width * 0.83, max(640, (screen.height - 135) * 16 / 9))
         window = PlayerWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: width * 9 / 16),
-                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         window.delegate = self
         session.window = window
         window.title = ""
+        window.titleVisibility = .hidden
+        filename.font = .systemFont(ofSize: 13, weight: .semibold)
+        filename.lineBreakMode = .byTruncatingMiddle
+        // Let AppKit shrink the filename before moving buttons into the overflow menu.
+        let flexible = NSLayoutConstraint.Priority(rawValue: 1)
+        filename.setContentCompressionResistancePriority(flexible, for: .horizontal)
+        filename.setContentHuggingPriority(flexible, for: .horizontal)
+        filename.widthAnchor.constraint(greaterThanOrEqualToConstant: 1).isActive = true
         window.toolbarStyle = .unifiedCompact
+        window.titlebarSeparatorStyle = .none
         window.collectionBehavior = [.fullScreenPrimary]
         window.tabbingMode = .disallowed
         window.isReleasedWhenClosed = false
@@ -136,7 +154,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         session.videoSizeDidChange = { [weak self] in self?.applyRequestedSize() }
         session.windowStateChanged = { [weak self] in self?.updateWindowState() }
         ready = true
-        updateToolbar()
         session.start(opening: pendingURLs)
         pendingURLs.removeAll()
         updateTitle()
@@ -178,12 +195,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         rememberWindowSize()
     }
     func windowDidResize(_ notification: Notification) {
-        if ready && !changingFullScreen && !resizingForPreset { updateToolbar() }
         if let window, !window.inLiveResize { rememberWindowSize() }
     }
     func windowWillEnterFullScreen(_ notification: Notification) {
         rememberWindowSize()
         changingFullScreen = true
+    }
+    func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
+        proposedOptions.subtracting(.autoHideToolbar)
     }
     func windowWillExitFullScreen(_ notification: Notification) { changingFullScreen = true }
     func windowDidEnterFullScreen(_ notification: Notification) { finishFullScreenTransition() }
@@ -200,7 +219,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             guard let self, self.changingFullScreen else { return }
             self.changingFullScreen = false
             self.applyRequestedSize()
-            self.updateToolbar()
             self.updateWindowState()
             self.session.reveal()
             self.session.pip?.fullScreenTransitionFinished()
@@ -243,7 +261,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         resizingForPreset = true
         setWindowFrame(size: frame.size, within: screen.visibleFrame, animated: true)
         resizingForPreset = false
-        updateToolbar()
         session.smallPictureSize = size.smallPicture
         rememberWindowSize()
     }
@@ -256,71 +273,58 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     }
     func application(_ application: NSApplication, open urls: [URL]) {
         if ready {
-            session.openFromFinder(urls)
+            session.openMedia(urls)
             if !session.pipActive { window.makeKeyAndOrderFront(nil) }
         } else { pendingURLs = urls }
     }
     private func updateWindowState() {
         guard let window else { return }
+        let visible = session.controlsVisible
+        if window.toolbar?.isVisible != visible { window.toolbar?.isVisible = visible }
+        window.titlebarAppearsTransparent = !visible
+        for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            window.standardWindowButton(button)?.isHidden = !visible
+        }
         let floating = session.pinWhenPlaying && session.playing && !session.pipActive && !window.styleMask.contains(.fullScreen)
         window.level = floating ? .floating : .normal
+        pipItem?.image = NSImage(systemSymbolName: session.pipActive ? "pip.exit" : "pip.enter", accessibilityDescription: "화면 속 화면")
         pinItem?.image = NSImage(systemSymbolName: session.pinWhenPlaying ? "pin.fill" : "pin", accessibilityDescription: "재생 중 항상 위")
         pinItem?.toolTip = session.pinWhenPlaying ? "재생 중 항상 위 끄기" : "재생 중 항상 위 켜기"
-        pipItem?.image = NSImage(systemSymbolName: session.pipActive ? "pip.exit" : "pip.enter", accessibilityDescription: "화면 속 화면")
         playlistItem?.toolTip = session.showsPlaylist ? "재생목록 닫기 (⌘L)" : "재생목록 보기 (⌘L)"
     }
 
     private func updateTitle() {
         window.title = session.current?.url.lastPathComponent ?? ""
+        filename.stringValue = window.title
+        filename.toolTip = window.title
     }
 
-    private func toolbarItems(for width: CGFloat) -> [NSToolbarItem.Identifier] {
-        var items: [NSToolbarItem.Identifier] = [.flexibleSpace]
-        guard width >= PlayerWindowLayout.seekControlsWidth else { return items }
-        items.append(.openFile)
-        if width >= PlayerWindowLayout.extendedControlsWidth { items += [.pin, .pip] }
-        items.append(.playlist)
-        return items
-    }
-    private func updateToolbar() {
-        guard let toolbar = window.toolbar, !updatingToolbar else { return }
-        let desired = toolbarItems(for: window.frame.width)
-        let current = toolbar.items.map(\.itemIdentifier)
-        guard current != desired else { return }
-        updatingToolbar = true
-        defer { updatingToolbar = false }
-        let common = zip(current, desired).prefix { $0.0 == $0.1 }.count
-        while toolbar.items.count > common { toolbar.removeItem(at: toolbar.items.count - 1) }
-        for id in desired.dropFirst(common) { toolbar.insertItem(withItemIdentifier: id, at: toolbar.items.count) }
-        updateWindowState()
-    }
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarItems(for: window.frame.width)
+        [.filename, .flexibleSpace, .pip, .pin, .playlist]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarItems(for: .infinity)
+        toolbarDefaultItemIdentifiers(toolbar)
     }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         let item = NSToolbarItem(itemIdentifier: id)
         switch id {
-        case .openFile:
-            item.label = "동영상 열기"
-            item.toolTip = "동영상 열기 (⌘O)"
-            item.image = NSImage(systemSymbolName: "folder", accessibilityDescription: item.label)
-            item.target = self
-            item.action = #selector(openFiles)
-        case .pin:
-            item.label = "재생 중 항상 위"
-            item.image = NSImage(systemSymbolName: "pin", accessibilityDescription: item.label)
-            item.target = self; item.action = #selector(togglePin)
-            pinItem = item
+        case .filename:
+            item.view = filename
+            item.visibilityPriority = .low
+            item.isBordered = false
         case .pip:
             item.label = "화면 속 화면"
             item.toolTip = "화면 속 화면 (P)"
             item.image = NSImage(systemSymbolName: "pip.enter", accessibilityDescription: item.label)
             item.target = self; item.action = #selector(togglePiP)
             pipItem = item
+        case .pin:
+            item.label = "재생 중 항상 위"
+            item.image = NSImage(systemSymbolName: "pin", accessibilityDescription: item.label)
+            item.toolTip = "재생 중 항상 위 켜기"
+            item.target = self; item.action = #selector(togglePin)
+            pinItem = item
         case .playlist:
             item.label = "재생목록"
             item.toolTip = "재생목록 보기 (⌘L)"
@@ -387,7 +391,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         let view = menu("보기")
         for preset in WindowSizePreset.allCases {
             let item = view.addItem(withTitle: preset.menuTitle, action: #selector(chooseWindowSize(_:)),
-                                    keyEquivalent: String(preset.rawValue))
+                                    keyEquivalent: preset == .minimum ? "" : String(preset.rawValue))
             item.keyEquivalentModifierMask = []
             item.tag = preset.rawValue
             item.target = self
@@ -425,7 +429,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
                 return nil
             }
             guard modifiers.isEmpty else { return event }
-            if let digits = event.charactersIgnoringModifiers, let key = Int(digits), let preset = WindowSizePreset(rawValue: key) {
+            if let digits = event.charactersIgnoringModifiers, let key = Int(digits),
+               let preset = WindowSizePreset(rawValue: key), preset != .minimum {
                 if !event.isARepeat { self.requestSize(preset) }
                 return nil
             }
