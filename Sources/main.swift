@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 private extension NSToolbarItem.Identifier {
     static let openFile = Self("openFile")
@@ -82,6 +81,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     private var pendingURLs = [URL]()
     private var ready = false
     private var updatingToolbar = false
+    private var associatingFiles = false
     private let frameSizeKey = "playerWindowFrameSize"
     private var changingFullScreen = false
     private var requestedSize: (preset: WindowSizePreset, selection: UUID?)?
@@ -342,11 +342,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             bar.addItem(top)
             return child
         }
+        @discardableResult
         func add(_ menu: NSMenu, _ title: String, _ action: Selector, key: String = "",
-                 modifiers: NSEvent.ModifierFlags = [.command], target: AnyObject? = nil) {
+                 modifiers: NSEvent.ModifierFlags = [.command], target: AnyObject? = nil) -> NSMenuItem {
             let item = menu.addItem(withTitle: title, action: action, keyEquivalent: key)
             item.keyEquivalentModifierMask = modifiers
             item.target = target
+            return item
         }
         let app = menu("JulPlayer")
         add(app, "JulPlayer 정보", #selector(about), target: self)
@@ -359,9 +361,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         add(file, "현재 영상과 자막을 바로 휴지통으로 이동", #selector(trashFileImmediately), key: "\u{8}", target: self)
         let associationItem = NSMenuItem(title: "기본 플레이어로 연결", action: nil, keyEquivalent: "")
         let formats = NSMenu(title: associationItem.title)
-        for ext in LocalMedia.videoExtensions {
-            let option = formats.addItem(withTitle: ext.uppercased(), action: #selector(associate(_:)), keyEquivalent: "")
-            option.target = self; option.representedObject = ext
+        add(formats, "모든 동영상 형식 연결", #selector(associate(_:)), target: self).representedObject = VideoFileFormat.supported
+        formats.addItem(.separator())
+        for format in VideoFileFormat.supported {
+            for ext in format.extensions {
+                add(formats, ext.uppercased(), #selector(associate(_:)), target: self).representedObject = [format]
+            }
         }
         associationItem.submenu = formats; file.addItem(associationItem)
         file.addItem(.separator())
@@ -462,14 +467,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     @objc private func trashFile() { session.trashCurrent() }
     @objc private func trashFileImmediately() { session.trashCurrent(requiresConfirmation: false) }
     @objc private func associate(_ sender: NSMenuItem) {
-        guard let ext = sender.representedObject as? String, let type = UTType(filenameExtension: ext) else { return }
-        NSWorkspace.shared.setDefaultApplication(at: Bundle.main.bundleURL, toOpen: type) { [weak self] error in
-            DispatchQueue.main.async {
-                self?.session.show(error?.localizedDescription ?? "\(ext.uppercased()) 파일의 기본 플레이어를 JulPlayer로 연결했습니다.")
-            }
+        guard !associatingFiles, let formats = sender.representedObject as? [VideoFileFormat], !formats.isEmpty else { return }
+        associatingFiles = true
+        Task {
+            defer { associatingFiles = false }
+            let result = await VideoFileFormat.associate(formats, with: Bundle.main.bundleURL)
+            session.show(result, seconds: 8)
         }
     }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(associate(_:)) { return !associatingFiles }
         if item.action == #selector(chooseWindowSize(_:)) {
             return window?.isKeyWindow == true && window.attachedSheet == nil && session.panel == nil
                 && !(window.firstResponder is NSTextView) && (item.tag == WindowSizePreset.minimum.rawValue || session.current != nil)
