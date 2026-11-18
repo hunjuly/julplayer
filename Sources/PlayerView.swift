@@ -64,6 +64,8 @@ struct PlayerView: View {
             ZStack(alignment: .bottom) {
                 ZStack {
                     Color.black
+                    VideoWindowGestures(fullScreenOnDoubleClick: session.selection != nil)
+                        .accessibilityHidden(true)
                     if session.selection == nil {
                         VStack(spacing: 10) {
                             Button { session.openFiles() } label: {
@@ -75,22 +77,21 @@ struct PlayerView: View {
                             .buttonStyle(.plain).help("동영상 열기 (⌘O)")
                             Text("여기에 동영상을 놓아도 됩니다")
                                 .font(.caption).foregroundStyle(.secondary)
+                                .allowsHitTesting(false)
                         }
                     } else {
-                        ZStack {
-                            Color.clear
-                            if let display = session.engine?.displayLayer {
-                                VideoSurface(display: display, videoSize: session.videoDisplaySize)
-                                    .frame(maxWidth: smallPicture?.width, maxHeight: smallPicture?.height)
-                                    .allowsHitTesting(false)
-                            }
-                            if session.pipActive {
+                        if let display = session.engine?.displayLayer {
+                            VideoSurface(display: display, videoSize: session.videoDisplaySize)
+                                .frame(maxWidth: smallPicture?.width, maxHeight: smallPicture?.height)
+                                .allowsHitTesting(false)
+                        }
+                        if session.pipActive {
+                            ZStack {
                                 Color.black
                                 Label("화면 속 화면에서 재생 중", systemImage: "pip.fill").foregroundStyle(.secondary)
                             }
+                            .allowsHitTesting(false)
                         }
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2) { session.window?.toggleFullScreen(nil) }
                     }
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
@@ -124,6 +125,39 @@ struct PlayerView: View {
             .onContinuousHover { phase in
                 if case .active = phase { session.reveal() }
             }
+        }
+    }
+}
+
+private struct VideoWindowGestures: NSViewRepresentable {
+    let fullScreenOnDoubleClick: Bool
+
+    func makeNSView(context: Context) -> GestureView { GestureView() }
+    func updateNSView(_ view: GestureView, context: Context) { view.fullScreenOnDoubleClick = fullScreenOnDoubleClick }
+
+    final class GestureView: NSView {
+        var fullScreenOnDoubleClick = false
+        private var press: NSEvent?
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            press = event
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let press, let window else { return }
+            let start = press.locationInWindow
+            let point = event.locationInWindow
+            guard hypot(point.x - start.x, point.y - start.y) >= 3 else { return }
+            self.press = nil
+            // AppKit starts the window drag with the original mouse-down event.
+            if !window.styleMask.contains(.fullScreen) { window.performDrag(with: press) }
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            defer { press = nil }
+            if press?.clickCount == 2, fullScreenOnDoubleClick { window?.toggleFullScreen(nil) }
         }
     }
 }
@@ -169,6 +203,9 @@ private struct Controls: View {
         .padding(.horizontal, density >= .extended ? 18 : 12)
         .frame(maxWidth: .infinity)
         .frame(height: density.barHeight)
+        .background {
+            VideoWindowGestures(fullScreenOnDoubleClick: false).accessibilityHidden(true)
+        }
         .background {
             if reduceTransparency {
                 Color(white: 0.10)
