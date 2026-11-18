@@ -51,7 +51,7 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var selection: UUID?
     @Published private(set) var position = 0.0
     @Published private(set) var playing = false
-    @Published private(set) var volume = 0.68
+    @Published private(set) var volume: Double
     @Published private(set) var streams: [MediaStream] = []
     @Published private(set) var subtitleDelay = 0.0
     @Published private(set) var audioDelay = 0.0
@@ -85,7 +85,6 @@ final class PlayerSession: ObservableObject {
     private var noticeEnds = TimeInterval.infinity
     private var timer: Timer?
     private var playbackActivity: NSObjectProtocol?
-    private var beforeMute = 0.68
     private var folderScan: Task<Void, Never>?
     // mpv can pause itself on the last frame before the next poll reports EOF.
     private var playRequested = false
@@ -93,11 +92,16 @@ final class PlayerSession: ObservableObject {
     private var manualSubs: [URL: [URL]] = [:]
     private var pendingSubtitles = [URL]()
     private var fileTicket = 0
-    private let streamDefaults: UserDefaults
+    private static let volumeKey = "playbackVolume"
+    private static let beforeMuteKey = "volumeBeforeMute"
+    private let defaults: UserDefaults
     private var sidecarsReady = false
 
-    init(streamDefaults: UserDefaults = .standard) {
-        self.streamDefaults = streamDefaults
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let initialVolume = 0.68
+        defaults.register(defaults: [Self.volumeKey: initialVolume, Self.beforeMuteKey: initialVolume])
+        volume = defaults.double(forKey: Self.volumeKey)
         do { engine = try VideoEngine.make() }
         catch { engine = nil; notice = error.localizedDescription }
     }
@@ -221,13 +225,21 @@ final class PlayerSession: ObservableObject {
         engine?.seek(position); reveal()
     }
     func setVolume(_ value: Double) {
-        volume = min(1,max(0,value)); _ = engine?.setNumber(volume * 100, forOption: "volume"); reveal()
+        guard value.isFinite else { return }
+        let level = min(1, max(0, value))
+        if level != volume {
+            if level == 0 { defaults.set(volume, forKey: Self.beforeMuteKey) }
+            volume = level
+            defaults.set(level, forKey: Self.volumeKey)
+            _ = engine?.setNumber(level * 100, forOption: "volume")
+        }
+        reveal()
     }
     func toggleMute() {
-        if volume > 0 { beforeMute = volume; setVolume(0) } else { setVolume(beforeMute) }
+        setVolume(volume > 0 ? 0 : defaults.double(forKey: Self.beforeMuteKey))
     }
     private func ordinal(for kind: StreamKind, count: Int) -> Int {
-        let saved = streamDefaults.integer(forKey: kind.ordinalKey)
+        let saved = defaults.integer(forKey: kind.ordinalKey)
         return saved > 0 && saved <= count ? saved : 1
     }
 
@@ -237,15 +249,15 @@ final class PlayerSession: ObservableObject {
             let options = tracks.filter { $0.kind == kind }
             guard !options.isEmpty else { continue }
             let number = ordinal(for: kind, count: options.count)
-            let disabled = streamDefaults.bool(forKey: kind.disabledKey)
+            let disabled = defaults.bool(forKey: kind.disabledKey)
             let target = disabled ? -1 : options[number - 1].id
             if (options.first(where: \.selected)?.id ?? -1) != target {
                 guard engine?.selectTrack(target, property: kind.trackProperty) == true else { continue }
                 for i in values.indices where values[i].kind == kind { values[i].selected = values[i].id == target }
             }
             // External subtitles can add the saved slot after the embedded tracks arrive.
-            if !disabled, kind == .audio || sidecarsReady, number != streamDefaults.integer(forKey: kind.ordinalKey) {
-                streamDefaults.set(number, forKey: kind.ordinalKey)
+            if !disabled, kind == .audio || sidecarsReady, number != defaults.integer(forKey: kind.ordinalKey) {
+                defaults.set(number, forKey: kind.ordinalKey)
             }
         }
         if values != streams { streams = values }
@@ -256,8 +268,8 @@ final class PlayerSession: ObservableObject {
         let index = choices.firstIndex { $0.id == id }
         guard loaded, id < 0 || index != nil else { return }
         guard engine?.selectTrack(id, property: kind.trackProperty) == true else { show("스트림을 전환할 수 없습니다."); return }
-        if let index { streamDefaults.set(index + 1, forKey: kind.ordinalKey) }
-        streamDefaults.set(id < 0, forKey: kind.disabledKey)
+        if let index { defaults.set(index + 1, forKey: kind.ordinalKey) }
+        defaults.set(id < 0, forKey: kind.disabledKey)
         if let rows = engine?.trackList() { applyStreamChoices(to: rows.compactMap(MediaStream.init)) }
         reveal()
     }
@@ -348,8 +360,8 @@ final class PlayerSession: ObservableObject {
                     let tracks = rows.compactMap(MediaStream.init)
                     let subtitles = tracks.filter { $0.kind == .subtitle }
                     if let index = subtitles.firstIndex(where: { $0.externalURL == url.standardizedFileURL }) {
-                        streamDefaults.set(index + 1, forKey: StreamKind.subtitle.ordinalKey)
-                        streamDefaults.set(false, forKey: StreamKind.subtitle.disabledKey)
+                        defaults.set(index + 1, forKey: StreamKind.subtitle.ordinalKey)
+                        defaults.set(false, forKey: StreamKind.subtitle.disabledKey)
                     }
                     applyStreamChoices(to: tracks)
                 }

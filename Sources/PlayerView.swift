@@ -288,9 +288,9 @@ private struct Controls: View {
     private func seekButton(_ seconds: Int) -> some View {
         let backwards = seconds < 0
         let number = abs(seconds)
-        let key = number == 10 ? (backwards ? " (←)" : " (→)") : ""
+        let key = (number == 30 ? "⌥" : "") + (backwards ? "←" : "→")
         return IconControl("\(backwards ? "gobackward" : "goforward").\(number)",
-                           label: "\(number)초 \(backwards ? "뒤로" : "앞으로")\(key)", size: number == 10 ? 19 : 17) {
+                           label: "\(number)초 \(backwards ? "뒤로" : "앞으로") (\(key))", size: number == 10 ? 19 : 17) {
             session.seek(to: session.position + Double(seconds))
         }
     }

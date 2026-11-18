@@ -401,8 +401,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         add(play, "다음 파일", #selector(nextFile), key: "\u{F703}", target: self)
         add(play, "10초 뒤로", #selector(backward), target: self)
         add(play, "10초 앞으로", #selector(forward), target: self)
-        add(play, "30초 뒤로", #selector(back30), target: self)
-        add(play, "30초 앞으로", #selector(forward30), target: self)
+        add(play, "30초 뒤로", #selector(back30), key: "\u{F702}", modifiers: [.option], target: self)
+        add(play, "30초 앞으로", #selector(forward30), key: "\u{F703}", modifiers: [.option], target: self)
         play.addItem(.separator())
         add(play, "음소거 전환", #selector(toggleMute), key: "m", modifiers: [], target: self)
         add(play, "자막 켜기 / 끄기", #selector(toggleCaptions), key: "c", modifiers: [], target: self)
@@ -446,6 +446,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
                 default: return event
                 }
                 if !event.isARepeat { action() }
+                return nil
+            }
+            if modifiers == [.option] {
+                switch event.keyCode {
+                case 123: self.back30()
+                case 124: self.forward30()
+                default: return event
+                }
                 return nil
             }
             guard modifiers.isEmpty else { return event }
@@ -507,9 +515,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
                 && !(window.firstResponder is NSTextView) && (item.tag == WindowSizePreset.minimum.rawValue || session.current != nil)
         }
         if item.action == #selector(audioPanel) || item.action == #selector(subtitlePanel) { return session.loaded }
-        if [#selector(previousFile), #selector(nextFile), #selector(trashFile), #selector(trashFileImmediately)].contains(item.action) {
+        if [#selector(previousFile), #selector(nextFile), #selector(trashFile), #selector(trashFileImmediately),
+            #selector(back30), #selector(forward30)].contains(item.action) {
             guard window?.isKeyWindow == true, window.attachedSheet == nil, session.panel == nil,
                   !(window.firstResponder is NSTextView) else { return false }
+            if item.action == #selector(back30) || item.action == #selector(forward30) { return session.loaded }
             if item.action == #selector(previousFile) { return session.adjacent(-1) != nil }
             if item.action == #selector(nextFile) { return session.adjacent(1) != nil }
             return session.current != nil && !session.trashInProgress
