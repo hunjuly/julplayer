@@ -37,6 +37,15 @@ struct PlayerView: View {
                     }
                 }
             }
+            .overlay(alignment: .top) {
+                PanelBackground(atTop: true)
+                    .frame(height: area.safeAreaInsets.top)
+                    .offset(y: -area.safeAreaInsets.top)
+                    .opacity(session.controlsVisible ? 1 : 0)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: session.controlsVisible)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
         }
         .overlay {
             if let hint = session.dropHint {
@@ -162,11 +171,27 @@ private struct VideoWindowGestures: NSViewRepresentable {
     }
 }
 
+private struct PanelBackground: View {
+    let atTop: Bool
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        if reduceTransparency {
+            Color(white: 0.10)
+        } else {
+            LinearGradient(stops: [
+                .init(color: .black.opacity(0.26), location: 0),
+                .init(color: .black.opacity(0.50), location: 0.35),
+                .init(color: .black.opacity(0.66), location: 1)
+            ], startPoint: atTop ? .bottom : .top, endPoint: atTop ? .top : .bottom)
+        }
+    }
+}
+
 private struct Controls: View {
     @ObservedObject var session: PlayerSession
     let layout: PlaybackControlLayout
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private var volumeSymbol: String {
         if session.volume == 0 { return "speaker.slash.fill" }
@@ -190,17 +215,7 @@ private struct Controls: View {
         .background {
             VideoWindowGestures(fullScreenOnDoubleClick: false).accessibilityHidden(true)
         }
-        .background {
-            if reduceTransparency {
-                Color(white: 0.10)
-            } else {
-                LinearGradient(stops: [
-                    .init(color: .black.opacity(0.26), location: 0),
-                    .init(color: .black.opacity(0.50), location: 0.35),
-                    .init(color: .black.opacity(0.66), location: 1)
-                ], startPoint: .top, endPoint: .bottom)
-            }
-        }
+        .background { PanelBackground(atTop: false) }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.14), value: layout.transport)
     }
 
@@ -254,15 +269,15 @@ private struct Controls: View {
             HStack(spacing: 0) {
                 Divider().frame(height: 15)
                 Spacer(minLength: 0)
-                IconControl("trash", label: "현재 영상과 자막 삭제 (⌫)", size: 15) { session.trashCurrent() }
-                    .disabled(session.trashInProgress)
+                IconControl("trash", label: "현재 영상과 자막 삭제 (⌫)", size: 15) { session.deleteCurrent() }
+                    .disabled(session.deletionInProgress)
             }
         case .previous: fileButton(-1)
         case .next: fileButton(1)
-        case .back30: seekButton(-30)
+        case .back60: seekButton(-60)
         case .back10: seekButton(-10)
         case .ahead10: seekButton(10)
-        case .ahead30: seekButton(30)
+        case .ahead60: seekButton(60)
         case .play:
             Button(action: session.togglePlay) {
                 Image(systemName: session.playing ? "pause.fill" : "play.fill")
@@ -288,7 +303,7 @@ private struct Controls: View {
     private func seekButton(_ seconds: Int) -> some View {
         let backwards = seconds < 0
         let number = abs(seconds)
-        let key = (number == 30 ? "⌥" : "") + (backwards ? "←" : "→")
+        let key = (number == 60 ? "⌥" : "") + (backwards ? "←" : "→")
         return IconControl("\(backwards ? "gobackward" : "goforward").\(number)",
                            label: "\(number)초 \(backwards ? "뒤로" : "앞으로") (\(key))", size: number == 10 ? 19 : 17) {
             session.seek(to: session.position + Double(seconds))

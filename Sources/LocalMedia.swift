@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import UniformTypeIdentifiers
 
@@ -80,48 +81,65 @@ enum LocalMedia {
         }
     }
 
-    struct TrashEntry {
+    struct DeletionEntry {
         let url: URL
-        let volume: UInt64
-        let inode: UInt64
+        private let volume: dev_t
+        private let inode: ino_t
+
         init(_ url: URL) throws {
             self.url = url
-            let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
-            volume = (attrs[.systemNumber] as? NSNumber)?.uint64Value ?? 0
-            inode = (attrs[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+            var info = stat()
+            guard lstat((url as NSURL).fileSystemRepresentation, &info) == 0 else {
+                throw LocalMedia.fileError(url, errno)
+            }
+            let type = info.st_mode & S_IFMT
+            guard type == S_IFREG || type == S_IFLNK else {
+                throw LocalMedia.deletionError("일반 파일만 삭제할 수 있습니다. " + url.lastPathComponent)
+            }
+            volume = info.st_dev
+            inode = info.st_ino
+        }
+
+        fileprivate func checkIdentity() throws {
+            let current = try Self(url)
+            guard volume == current.volume, inode == current.inode else {
+                throw LocalMedia.deletionError("확인한 뒤 파일이 변경되었습니다. " + url.lastPathComponent)
+            }
         }
     }
-    static func trashEntries(movie: URL, attached: [URL], shared: Set<URL>) throws -> [TrashEntry] {
+    static func deletionEntries(movie: URL, attached: [URL], shared: Set<URL>) throws -> [DeletionEntry] {
         let matching = sidecars(for: movie, deleting: true)
         let autoLoaded = Set(sidecars(for: movie).map(\.standardizedFileURL))
         let explicit = attached.filter { !autoLoaded.contains($0.standardizedFileURL) && isSubtitle($0) && FileManager.default.fileExists(atPath: $0.path) }
         var seen = Set<URL>()
         let subtitles = (matching + explicit).filter { !shared.contains($0.standardizedFileURL) }
-        return try ([movie] + subtitles).map(\.standardizedFileURL).filter { seen.insert($0).inserted }.map(TrashEntry.init)
+        return try ([movie] + subtitles).map(\.standardizedFileURL).filter { seen.insert($0).inserted }.map(DeletionEntry.init)
     }
 
-    static func trash(_ entries: [TrashEntry]) throws {
-        let fm = FileManager.default
-        var moved: [(URL, URL)] = []
+    private static func deletionError(_ message: String) -> NSError {
+        NSError(domain: "JulPlayer.Deletion", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    private static func fileError(_ url: URL, _ code: Int32) -> NSError {
+        let message = NSError(domain: NSPOSIXErrorDomain, code: Int(code)).localizedDescription
+        return deletionError("\(url.lastPathComponent) — \(message)")
+    }
+
+    static func delete(_ entries: [DeletionEntry]) throws {
+        for entry in entries { try entry.checkIdentity() }
+        // Keep the movie in the playlist and on disk if a subtitle cannot be removed.
+        var removed = [String]()
         do {
-            for entry in entries {
-                let url = entry.url
-                let current = try TrashEntry(url)
-                guard entry.volume == current.volume && entry.inode == current.inode else {
-                    throw NSError(domain: "JulPlayer.Trash", code: 2, userInfo: [NSLocalizedDescriptionKey: "확인한 뒤 파일이 변경되었습니다. " + url.lastPathComponent])
+            for entry in entries.dropFirst() + entries.prefix(1) {
+                try entry.checkIdentity()
+                guard unlink((entry.url as NSURL).fileSystemRepresentation) == 0 else {
+                    throw fileError(entry.url, errno)
                 }
-                var destination: NSURL?
-                try fm.trashItem(at: url, resultingItemURL: &destination)
-                if let destination { moved.append((url, destination as URL)) }
+                removed.append(entry.url.lastPathComponent)
             }
         } catch {
-            var unrestored: [String] = []
-            for (original, trashed) in moved.reversed() {
-                do { try fm.moveItem(at: trashed, to: original) }
-                catch { unrestored.append(original.lastPathComponent) }
-            }
-            let details = unrestored.isEmpty ? "" : "\n휴지통에 있는 파일: " + unrestored.joined(separator: ", ")
-            throw NSError(domain: "JulPlayer.Trash", code: 1, userInfo: [NSLocalizedDescriptionKey: error.localizedDescription + details])
+            guard !removed.isEmpty else { throw error }
+            throw deletionError(error.localizedDescription + "\n이미 삭제된 자막: " + removed.joined(separator: ", "))
         }
     }
 }

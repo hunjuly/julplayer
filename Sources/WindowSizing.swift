@@ -57,7 +57,7 @@ enum PlayerWindowLayout {
 
 struct PlaybackControlLayout: Equatable {
     enum Item: Hashable {
-        case mute, volume, audio, subtitles, previous, back30, back10, play, ahead10, ahead30, next, trash
+        case mute, volume, audio, subtitles, previous, back60, back10, play, ahead10, ahead60, next, trash
 
         var width: CGFloat {
             switch self {
@@ -75,12 +75,12 @@ struct PlaybackControlLayout: Equatable {
     private static let sectionGap: CGFloat = 9
     private static let sections: [[Item]] = [
         [.mute, .volume],
-        [.previous, .back30, .back10, .play, .ahead10, .ahead30, .next],
+        [.previous, .back60, .back10, .play, .ahead10, .ahead60, .next],
         [.audio, .subtitles, .trash]
     ]
     // Reveal related pairs together. Keep the volume slider until after the buttons fit.
     private static let priorities: [[Item]] = [
-        [.back10, .ahead10], [.previous, .next], [.mute], [.back30, .ahead30],
+        [.back10, .ahead10], [.previous, .next], [.mute], [.back60, .ahead60],
         [.subtitles], [.audio], [.trash], [.volume]
     ]
 

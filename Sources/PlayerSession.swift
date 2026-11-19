@@ -94,7 +94,7 @@ final class PlayerSession: ObservableObject {
     @Published var pipActive = false { didSet { windowStateChanged?() } }
     @Published private(set) var notice: String?
     @Published private(set) var loaded = false
-    @Published private(set) var trashInProgress = false
+    @Published private(set) var deletionInProgress = false
     @Published var smallPictureSize: CGSize?
 
     var selectionDidChange: (() -> Void)?
@@ -418,31 +418,31 @@ final class PlayerSession: ObservableObject {
         }
     }
 
-    func trashCurrent(requiresConfirmation: Bool = true) {
-        guard !trashInProgress, let clip = current, let window,
+    func deleteCurrent(requiresConfirmation: Bool = true) {
+        guard !deletionInProgress, let clip = current, let window,
               window.attachedSheet == nil else { return }
-        trashInProgress = true
+        deletionInProgress = true
         let movie = clip.url
         let resumeIfKept = playRequested
         if resumeIfKept { setPlaying(false) }
         let shared = Set(manualSubs.filter { $0.key != movie }.flatMap(\.value).map(\.standardizedFileURL))
         let attached = manualSubs[movie, default: []]
         Task {
-            var moved = false
+            var deleted = false
             defer {
-                trashInProgress = false
-                if !moved && resumeIfKept && selection == clip.id { setPlaying(true) }
+                deletionInProgress = false
+                if !deleted && resumeIfKept && selection == clip.id { setPlaying(true) }
             }
             do {
                 let entries = try await Task.detached(priority: .userInitiated) {
-                    try LocalMedia.trashEntries(movie: movie, attached: attached, shared: shared)
+                    try LocalMedia.deletionEntries(movie: movie, attached: attached, shared: shared)
                 }.value
                 guard selection == clip.id, window.attachedSheet == nil else { return }
                 if requiresConfirmation {
-                    guard await confirmTrash(entries, movie: movie, in: window), selection == clip.id else { return }
+                    guard await confirmDeletion(entries, movie: movie, in: window), selection == clip.id else { return }
                 }
-                try await Task.detached(priority: .userInitiated) { try LocalMedia.trash(entries) }.value
-                moved = true
+                try await Task.detached(priority: .userInitiated) { try LocalMedia.delete(entries) }.value
+                deleted = true
                 manualSubs.removeValue(forKey: movie)
                 // A shortcut can arrive before Finder's initial folder scan finishes.
                 await folderScan?.value
@@ -455,21 +455,30 @@ final class PlayerSession: ObservableObject {
                     }
                 }
                 let count = entries.count - 1
-                show(count == 0 ? "영상을 휴지통으로 옮겼습니다." : "영상과 자막 \(count)개를 휴지통으로 옮겼습니다.")
+                show(count == 0 ? "영상을 삭제했습니다." : "영상과 자막 \(count)개를 삭제했습니다.")
             } catch { show(error.localizedDescription, seconds: 10) }
         }
     }
 
-    private func confirmTrash(_ entries: [LocalMedia.TrashEntry], movie: URL, in window: NSWindow) async -> Bool {
+    private func confirmDeletion(_ entries: [LocalMedia.DeletionEntry], movie: URL, in window: NSWindow) async -> Bool {
         let count = entries.count - 1
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = count == 0 ? "이 영상을 휴지통으로 옮길까요?" : "영상과 연결된 자막 \(count)개를 휴지통으로 옮길까요?"
+        alert.messageText = count == 0 ? "이 영상을 영구 삭제할까요?" : "영상과 연결된 자막 \(count)개를 영구 삭제할까요?"
         alert.informativeText = entries.map { entry in
             entry.url.deletingLastPathComponent() == movie.deletingLastPathComponent() ? entry.url.lastPathComponent : entry.url.path
         }.joined(separator: "\n")
-        alert.addButton(withTitle: "취소")
-        alert.addButton(withTitle: "휴지통으로 이동").hasDestructiveAction = true
-        return await alert.beginSheetModal(for: window) == .alertSecondButtonReturn
+        let delete = alert.addButton(withTitle: "삭제")
+        delete.hasDestructiveAction = true
+        delete.keyEquivalent = "\r"
+        alert.addButton(withTitle: "취소").keyEquivalent = "\u{1b}"
+        alert.window.initialFirstResponder = delete
+        return await withCheckedContinuation { continuation in
+            alert.beginSheetModal(for: window) { answer in
+                continuation.resume(returning: answer == .alertFirstButtonReturn)
+            }
+            alert.window.defaultButtonCell = delete.cell as? NSButtonCell
+            alert.window.makeFirstResponder(delete)
+        }
     }
 }

@@ -97,7 +97,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     private var changingFullScreen = false
     private var cursorHiddenForPlayback = false
     private var requestedSize: (preset: WindowSizePreset, selection: UUID?)?
-    private var resizingForPreset = false
+    private var needsVideoHeight = false
+    private var resizingWindow = false
     private var videoDrag: VideoWindowDrag?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -120,6 +121,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         filename.setContentHuggingPriority(flexible, for: .horizontal)
         filename.widthAnchor.constraint(greaterThanOrEqualToConstant: 1).isActive = true
         window.toolbarStyle = .unifiedCompact
+        window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.collectionBehavior = [.fullScreenPrimary]
         window.tabbingMode = .disallowed
@@ -144,17 +146,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         if let saved = UserDefaults.standard.string(forKey: frameSizeKey) {
             let size = NSSizeFromString(saved)
             if size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 {
-                setWindowFrame(size: size, within: screen)
+                window.setFrame(centeredFrame(size: size, within: screen), display: true)
             }
         }
         session.selectionDidChange = { [weak self] in
             guard let self else { return }
+            self.needsVideoHeight = false
             if let request = self.requestedSize, request.preset != .minimum, request.selection != self.session.selection {
                 self.requestedSize = nil
             }
             self.updateTitle()
         }
-        session.videoSizeDidChange = { [weak self] in self?.applyRequestedSize() }
+        session.videoSizeDidChange = { [weak self] in
+            self?.needsVideoHeight = true
+            self?.applyWindowSize()
+        }
         session.windowStateChanged = { [weak self] in self?.updateWindowState() }
         ready = true
         session.start(opening: pendingURLs)
@@ -174,10 +180,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     func windowWillClose(_ notification: Notification) { session.setPlaying(false) }
     func windowDidDeminiaturize(_ notification: Notification) {
         if session.pipActive { session.pip?.stop() }
+        applyWindowSize()
     }
     func windowWillStartLiveResize(_ notification: Notification) {
         // AppKit also sends live-resize notifications during a full-screen transition.
-        if !resizingForPreset && !changingFullScreen && !window.styleMask.contains(.fullScreen) {
+        if !resizingWindow && !changingFullScreen && !window.styleMask.contains(.fullScreen) {
             requestedSize = nil
             session.smallPictureSize = nil
             videoDrag = VideoWindowDrag(video: session.videoDisplaySize,
@@ -187,7 +194,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         }
     }
     func windowWillResize(_ sender: NSWindow, to proposedFrame: NSSize) -> NSSize {
-        guard let videoDrag, !resizingForPreset, !changingFullScreen, !sender.styleMask.contains(.fullScreen),
+        guard let videoDrag, !resizingWindow, !changingFullScreen, !sender.styleMask.contains(.fullScreen),
               let screen = sender.screen ?? NSScreen.main else { return proposedFrame }
         let proposed = sender.contentRect(forFrameRect: NSRect(origin: .zero, size: proposedFrame)).size
         let available = sender.contentRect(forFrameRect: screen.visibleFrame).size
@@ -199,6 +206,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         if window.contentAspectRatio != .zero { window.contentResizeIncrements = CGSize(width: 1, height: 1) }
         videoDrag = nil
         rememberWindowSize()
+        if needsVideoHeight || requestedSize != nil {
+            DispatchQueue.main.async { [weak self] in self?.applyWindowSize() }
+        }
     }
     func windowDidResize(_ notification: Notification) {
         if let window, !window.inLiveResize { rememberWindowSize() }
@@ -227,7 +237,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         DispatchQueue.main.async { [weak self] in
             guard let self, self.changingFullScreen else { return }
             self.changingFullScreen = false
-            self.applyRequestedSize()
+            self.applyWindowSize()
             self.session.reveal()
             self.updateWindowState()
             self.session.pip?.fullScreenTransitionFinished()
@@ -235,43 +245,62 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     }
 
     private func rememberWindowSize() {
-        guard ready, !resizingForPreset, !changingFullScreen, !window.styleMask.contains(.fullScreen) else { return }
+        guard ready, !resizingWindow, !changingFullScreen, !window.styleMask.contains(.fullScreen) else { return }
         UserDefaults.standard.set(NSStringFromSize(window.frame.size), forKey: frameSizeKey)
     }
 
-    private func setWindowFrame(size: CGSize, within screen: CGRect, animated: Bool = false) {
+    private func centeredFrame(size: CGSize, within screen: CGRect) -> CGRect {
         let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
-        let frame = PlayerWindowLayout.frame(of: size, centeredAt: center, within: screen)
-        guard frame != window.frame else { return }
-        window.setFrame(frame, display: true, animate: animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        return PlayerWindowLayout.frame(of: size, centeredAt: center, within: screen)
     }
 
     private func requestSize(_ preset: WindowSizePreset) {
         guard preset == .minimum || session.current != nil else { return }
         requestedSize = (preset, session.selection)
-        applyRequestedSize()
+        applyWindowSize()
     }
 
-    private func applyRequestedSize() {
-        guard let request = requestedSize, !changingFullScreen else { return }
+    private func applyWindowSize() {
+        guard requestedSize != nil || needsVideoHeight, !changingFullScreen, !resizingWindow else { return }
         if window.styleMask.contains(.fullScreen) {
-            changingFullScreen = true
-            window.toggleFullScreen(nil)
+            if requestedSize != nil {
+                changingFullScreen = true
+                window.toggleFullScreen(nil)
+            }
             return
         }
-        guard let screen = window.screen ?? NSScreen.main else { return }
+        guard !window.isMiniaturized, !window.inLiveResize, let screen = window.screen ?? NSScreen.main else { return }
         let available = window.contentRect(forFrameRect: screen.visibleFrame).size
-        guard let size = PlayerWindowLayout.dimensions(for: request.preset, videoPixels: session.videoDisplaySize,
-                                                       backingScale: window.backingScaleFactor,
-                                                       available: available, showsPlaylist: session.showsPlaylist) else { return }
+        let target: CGRect
+        if let request = requestedSize {
+            guard let size = PlayerWindowLayout.dimensions(for: request.preset, videoPixels: session.videoDisplaySize,
+                                                          backingScale: window.backingScaleFactor, available: available,
+                                                          showsPlaylist: session.showsPlaylist) else { return }
+            let frame = window.frameRect(forContentRect: CGRect(origin: .zero, size: size.content))
+            target = centeredFrame(size: frame.size, within: screen.visibleFrame)
+            session.smallPictureSize = size.smallPicture
+            session.reveal()
+        } else {
+            guard let video = session.videoDisplaySize, video.width > 0, video.height > 0 else { return }
+            let current = window.frame
+            var content = window.contentRect(forFrameRect: current)
+            let sidebar = session.showsPlaylist && PlayerWindowLayout.fitsSidebar(in: content.width) ? PlayerWindowLayout.playlistSpan : 0
+            let height = ((content.width - sidebar) * video.height / video.width).rounded()
+            content.size.height = min(available.height, max(PlayerWindowLayout.minimumContent.height, height))
+            let frameHeight = window.frameRect(forContentRect: content).height
+            let y = min(max(screen.visibleFrame.minY, current.maxY - frameHeight), screen.visibleFrame.maxY - frameHeight)
+            target = CGRect(x: current.minX, y: y, width: current.width, height: frameHeight)
+        }
         requestedSize = nil
-        let frame = window.frameRect(forContentRect: CGRect(origin: .zero, size: size.content))
-        session.reveal()
-        resizingForPreset = true
-        setWindowFrame(size: frame.size, within: screen.visibleFrame, animated: true)
-        resizingForPreset = false
-        session.smallPictureSize = size.smallPicture
+        needsVideoHeight = false
+        guard target != window.frame else { return }
+        resizingWindow = true
+        window.setFrame(target, display: true, animate: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        resizingWindow = false
         rememberWindowSize()
+        if needsVideoHeight || requestedSize != nil {
+            DispatchQueue.main.async { [weak self] in self?.applyWindowSize() }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -291,7 +320,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         guard let window else { return }
         let visible = session.controlsVisible
         if window.toolbar?.isVisible != visible { window.toolbar?.isVisible = visible }
-        window.titlebarAppearsTransparent = !visible
         for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             window.standardWindowButton(button)?.isHidden = !visible
         }
@@ -300,7 +328,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         pipItem?.image = NSImage(systemSymbolName: session.pipActive ? "pip.exit" : "pip.enter", accessibilityDescription: "화면 속 화면")
         pinItem?.image = NSImage(systemSymbolName: session.pinWhenPlaying ? "pin.fill" : "pin", accessibilityDescription: "재생 중 항상 위")
         pinItem?.toolTip = session.pinWhenPlaying ? "재생 중 항상 위 끄기" : "재생 중 항상 위 켜기"
-        playlistItem?.toolTip = session.showsPlaylist ? "재생목록 닫기 (⌘L)" : "재생목록 보기 (⌘L)"
+        playlistItem?.toolTip = session.showsPlaylist ? "재생목록 닫기 (L)" : "재생목록 보기 (L)"
         let hideCursor = !visible && session.playing && !session.pipActive && !changingFullScreen
             && window.styleMask.contains(.fullScreen) && window.isKeyWindow && NSApp.isActive
             && window.attachedSheet == nil && window.frame.contains(NSEvent.mouseLocation)
@@ -347,7 +375,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             pinItem = item
         case .playlist:
             item.label = "재생목록"
-            item.toolTip = "재생목록 보기 (⌘L)"
+            item.toolTip = "재생목록 보기 (L)"
             item.image = NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: item.label)
             item.target = self
             item.action = #selector(togglePlaylist)
@@ -381,8 +409,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         add(app, "JulPlayer 종료", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp)
         let file = menu("파일")
         add(file, "동영상 열기…", #selector(openFiles), key: "o", target: self)
-        add(file, "현재 영상과 자막을 휴지통으로 이동…", #selector(trashFile), key: "\u{8}", modifiers: [], target: self)
-        add(file, "현재 영상과 자막을 바로 휴지통으로 이동", #selector(trashFileImmediately), key: "\u{8}", target: self)
+        add(file, "현재 영상과 자막 삭제…", #selector(deleteFile), key: "\u{8}", modifiers: [], target: self)
+        add(file, "현재 영상과 자막 바로 삭제", #selector(deleteFileImmediately), key: "\u{8}", target: self)
         let associationItem = NSMenuItem(title: "기본 플레이어로 연결", action: nil, keyEquivalent: "")
         let formats = NSMenu(title: associationItem.title)
         add(formats, "모든 동영상 형식 연결", #selector(associate(_:)), target: self).representedObject = VideoFileFormat.supported
@@ -401,8 +429,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         add(play, "다음 파일", #selector(nextFile), key: "\u{F703}", target: self)
         add(play, "10초 뒤로", #selector(backward), target: self)
         add(play, "10초 앞으로", #selector(forward), target: self)
-        add(play, "30초 뒤로", #selector(back30), key: "\u{F702}", modifiers: [.option], target: self)
-        add(play, "30초 앞으로", #selector(forward30), key: "\u{F703}", modifiers: [.option], target: self)
+        add(play, "60초 뒤로", #selector(back60), key: "\u{F702}", modifiers: [.option], target: self)
+        add(play, "60초 앞으로", #selector(forward60), key: "\u{F703}", modifiers: [.option], target: self)
         play.addItem(.separator())
         add(play, "음소거 전환", #selector(toggleMute), key: "m", modifiers: [], target: self)
         add(play, "자막 켜기 / 끄기", #selector(toggleCaptions), key: "c", modifiers: [], target: self)
@@ -423,7 +451,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             item.target = self
         }
         view.addItem(.separator())
-        add(view, "재생목록 전환", #selector(togglePlaylist), key: "l", target: self)
+        add(view, "재생목록 전환", #selector(togglePlaylist), key: "l", modifiers: [], target: self)
         add(view, "전체 화면 전환", #selector(fullScreen), key: "f", modifiers: [.control, .command], target: self)
         add(view, "재생 중 항상 위", #selector(togglePin), target: self)
         add(view, "화면 속 화면", #selector(togglePiP), key: "p", modifiers: [], target: self)
@@ -446,7 +474,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             if modifiers == [.command] {
                 let action: () -> Void
                 switch event.keyCode {
-                case 51, 117: action = self.trashFileImmediately
+                case 51, 117: action = self.deleteFileImmediately
                 case 123: action = self.previousFile
                 case 124: action = self.nextFile
                 default: return event
@@ -456,8 +484,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             }
             if modifiers == [.option] {
                 switch event.keyCode {
-                case 123: self.back30()
-                case 124: self.forward30()
+                case 123: self.back60()
+                case 124: self.forward60()
                 default: return event
                 }
                 return nil
@@ -469,7 +497,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
                 return nil
             }
             switch event.keyCode {
-            case 51: if !event.isARepeat { self.trashFile() }
+            case 51: if !event.isARepeat { self.deleteFile() }
             case 123: self.backward()
             case 124: self.forward()
             case 125: self.session.setVolume(self.session.volume - 0.05)
@@ -479,6 +507,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             case 8: if !event.isARepeat { self.toggleCaptions() }
             case 3, 36, 76: if !event.isARepeat { self.fullScreen() }
             case 35: if !event.isARepeat { self.togglePiP() }
+            case 37: if !event.isARepeat { self.togglePlaylist() }
             default: return event
             }
             return nil
@@ -502,12 +531,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     @objc private func subtitlePanel() { session.panel = .subtitle }
     @objc private func previousFile() { session.stepFile(-1) }
     @objc private func nextFile() { session.stepFile(1) }
-    @objc private func back30() { session.seek(to: session.position - 30) }
-    @objc private func forward30() { session.seek(to: session.position + 30) }
+    @objc private func back60() { session.seek(to: session.position - 60) }
+    @objc private func forward60() { session.seek(to: session.position + 60) }
     @objc private func togglePiP() { session.pip?.toggle() }
     @objc private func togglePin() { session.pinWhenPlaying.toggle() }
-    @objc private func trashFile() { session.trashCurrent() }
-    @objc private func trashFileImmediately() { session.trashCurrent(requiresConfirmation: false) }
+    @objc private func deleteFile() { session.deleteCurrent() }
+    @objc private func deleteFileImmediately() { session.deleteCurrent(requiresConfirmation: false) }
     @objc private func associate(_ sender: NSMenuItem) {
         guard !associatingFiles, let formats = sender.representedObject as? [VideoFileFormat], !formats.isEmpty else { return }
         associatingFiles = true
@@ -528,14 +557,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
                 && !(window.firstResponder is NSTextView) && (item.tag == WindowSizePreset.minimum.rawValue || session.current != nil)
         }
         if item.action == #selector(audioPanel) || item.action == #selector(subtitlePanel) { return session.loaded }
-        if [#selector(previousFile), #selector(nextFile), #selector(trashFile), #selector(trashFileImmediately),
-            #selector(back30), #selector(forward30)].contains(item.action) {
+        if [#selector(togglePlaylist), #selector(previousFile), #selector(nextFile), #selector(deleteFile), #selector(deleteFileImmediately),
+            #selector(back60), #selector(forward60)].contains(item.action) {
             guard window?.isKeyWindow == true, window.attachedSheet == nil, session.panel == nil,
                   !(window.firstResponder is NSTextView) else { return false }
-            if item.action == #selector(back30) || item.action == #selector(forward30) { return session.loaded }
+            if item.action == #selector(togglePlaylist) { return true }
+            if item.action == #selector(back60) || item.action == #selector(forward60) { return session.loaded }
             if item.action == #selector(previousFile) { return session.adjacent(-1) != nil }
             if item.action == #selector(nextFile) { return session.adjacent(1) != nil }
-            return session.current != nil && !session.trashInProgress
+            return session.current != nil && !session.deletionInProgress
         }
         if item.action == #selector(togglePin) { item.state = session.pinWhenPlaying ? .on : .off }
         if item.action == #selector(togglePiP) { item.state = session.pipActive ? .on : .off; return session.loaded }
