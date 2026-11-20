@@ -131,8 +131,8 @@ struct PlayerView: View {
                 }
             }
             .clipped()
-            .onContinuousHover { phase in
-                if case .active = phase { session.reveal() }
+            .onHover { inside in
+                if inside { session.revealForPointer() }
             }
         }
     }

@@ -17,7 +17,7 @@ private final class PlayerWindow: NSWindow {
     override func sendEvent(_ event: NSEvent) {
         switch event.type {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
-            (contentView as? PlayerHost)?.revealControls()
+            (contentView as? PlayerHost)?.pointerMoved(with: event)
         default: break
         }
         if event.type == .scrollWheel, let host = contentView as? PlayerHost, host.adjustVolume(for: event) { return }
@@ -39,7 +39,10 @@ private final class PlayerHost: NSHostingView<PlayerView> {
     private var session: PlayerSession { rootView.session }
     override var acceptsFirstResponder: Bool { true }
 
-    func revealControls() { session.reveal() }
+    func pointerMoved(with event: NSEvent) {
+        guard event.window === window, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        session.revealForPointer()
+    }
 
     func adjustVolume(for event: NSEvent) -> Bool {
         guard session.loaded, !session.pipActive, session.panel == nil, window?.attachedSheet == nil,
@@ -176,7 +179,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationWillResignActive(_ notification: Notification) { setPlaybackCursorHidden(false) }
     func windowDidResignKey(_ notification: Notification) { setPlaybackCursorHidden(false) }
-    func windowDidBecomeKey(_ notification: Notification) { session.reveal() }
+    func windowDidBecomeKey(_ notification: Notification) { session.revealForPointer() }
     func windowWillClose(_ notification: Notification) { session.setPlaying(false) }
     func windowDidDeminiaturize(_ notification: Notification) {
         if session.pipActive { session.pip?.stop() }

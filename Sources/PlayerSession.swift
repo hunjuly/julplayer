@@ -104,7 +104,11 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var videoDisplaySize: CGSize?
     var current: Clip? { clips.first { $0.id == selection } }
     var duration: Double { current?.duration ?? 0 }
-    var overControls = false { didSet { reveal() } }
+    var overControls = false {
+        didSet {
+            if oldValue && !overControls { lastInteraction = ProcessInfo.processInfo.systemUptime }
+        }
+    }
     var scrubbing = false { didSet { reveal() } }
     let engine: VideoEngine?
     private(set) var pip: PictureInPicture?
@@ -162,6 +166,11 @@ final class PlayerSession: ObservableObject {
         lastInteraction = ProcessInfo.processInfo.systemUptime
         if !controlsVisible { controlsVisible = true }
     }
+    func revealForPointer() {
+        guard let window, window.isVisible, !window.isMiniaturized,
+              window.frame.contains(NSEvent.mouseLocation) else { return }
+        reveal()
+    }
     func show(_ text: String, seconds: Double = 4) {
         notice = text; noticeEnds = ProcessInfo.processInfo.systemUptime + seconds; reveal()
     }
@@ -209,7 +218,7 @@ final class PlayerSession: ObservableObject {
         }
         advanceAfterEnd()
         if playing && controlsVisible && !overControls && !scrubbing && !showsPlaylist && panel == nil
-            && window?.attachedSheet == nil && now-lastInteraction > 2.8 {
+            && window?.attachedSheet == nil && now - lastInteraction >= 2 {
             controlsVisible = false
         }
     }
