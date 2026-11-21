@@ -18,4 +18,11 @@ xcrun swiftc -O -parse-as-library -target "$(uname -m)-apple-macos13.0" -import-
 cp Resources/Info.plist "$contents/Info.plist"
 rm -f "$contents/Resources/Lake.mkv" "$contents/Resources/lake.jpg"
 cp Resources/*.icns Resources/ThirdParty.txt Resources/LibraryCredits.rtf "$contents/Resources/"
+# The libmpv OpenGL renderer loads fixed shaders and has no tunable shader parameters.
+for transfer in pq srgb; do
+    for gain in 2 5; do
+        sed -e "s/@transfer@/$transfer/g" -e "s/@gain@/$gain.0/g" Engine/Brightness.glsl.in \
+            > "$contents/Resources/Brightness-$transfer-$gain.glsl"
+    done
+done
 codesign --force --sign - "$bundle"

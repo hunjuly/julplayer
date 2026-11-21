@@ -435,6 +435,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         add(play, "60초 뒤로", #selector(back60), key: "\u{F702}", modifiers: [.option], target: self)
         add(play, "60초 앞으로", #selector(forward60), key: "\u{F703}", modifiers: [.option], target: self)
         play.addItem(.separator())
+        let brightnessItem = play.addItem(withTitle: "영상 밝기", action: nil, keyEquivalent: "")
+        let brightnessMenu = NSMenu(title: brightnessItem.title)
+        for brightness in VideoBrightness.allCases {
+            add(brightnessMenu, brightness.title, #selector(chooseBrightness(_:)), target: self).representedObject = brightness
+        }
+        brightnessItem.submenu = brightnessMenu
         add(play, "음소거 전환", #selector(toggleMute), key: "m", modifiers: [], target: self)
         add(play, "자막 켜기 / 끄기", #selector(toggleCaptions), key: "c", modifiers: [], target: self)
         add(play, "오디오 스트림 및 싱크…", #selector(audioPanel), target: self)
@@ -525,6 +531,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     @objc private func backward() { session.seek(to: session.position - 10) }
     @objc private func forward() { session.seek(to: session.position + 10) }
     @objc private func toggleMute() { session.toggleMute() }
+    @objc private func chooseBrightness(_ sender: NSMenuItem) {
+        if let brightness = sender.representedObject as? VideoBrightness { session.videoBrightness = brightness }
+    }
     @objc private func fullScreen() { window.toggleFullScreen(nil) }
     @objc private func toggleCaptions() { session.toggleCaptions() }
     @objc private func chooseSubtitleSize(_ sender: NSMenuItem) {
@@ -551,6 +560,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(associate(_:)) { return !associatingFiles }
+        if let brightness = item.representedObject as? VideoBrightness {
+            item.state = brightness == session.videoBrightness ? .on : .off
+            return true
+        }
         if let size = item.representedObject as? SubtitleSize {
             item.state = size == session.subtitleSize ? .on : .off
             return true

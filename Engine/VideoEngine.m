@@ -33,11 +33,11 @@ static id nodeValue(const mpv_node *n) {
     }
 }
 
-static NSData *contentLightLevels(NSDictionary *video) {
+static NSData *contentLightLevels(NSDictionary *video, NSInteger multiplier) {
     double peak = [video[@"max-cll"] doubleValue], average = [video[@"max-fall"] doubleValue];
     if (!(peak > 0 && peak <= 10000 && average >= 0 && average <= peak)) return nil;
-    uint16_t levels[] = {CFSwapInt16HostToBig((uint16_t)lround(peak)),
-                         CFSwapInt16HostToBig((uint16_t)lround(average))};
+    uint16_t levels[] = {CFSwapInt16HostToBig((uint16_t)lround(fmin(10000, peak * multiplier))),
+                         CFSwapInt16HostToBig((uint16_t)lround(fmin(10000, average * multiplier)))};
     return [NSData dataWithBytes:levels length:sizeof(levels)];
 }
 
@@ -73,6 +73,8 @@ static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
     int _width, _height;
     BOOL _outputHDR, _canPresent; // Render queue.
     int _targetHDR; // mpv target on the player thread. -1 means a partial option change needs a retry.
+    NSInteger _requestedBrightness, _appliedBrightness;
+    BOOL _brightnessUsesPQ;
     BOOL _lastDisplayHDR, _needsOutput, _awaitingFirstFrame;
     int64_t _entry;
     BOOL _loaded;
@@ -84,6 +86,7 @@ static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
 - (instancetype)initWithError:(NSError **)error {
     if (!(self = [super init])) return nil;
     _targetHDR = -1;
+    _requestedBrightness = _appliedBrightness = 1;
     _displayLayer = [AVSampleBufferDisplayLayer layer];
     _displayLayer.videoGravity = AVLayerVideoGravityResizeAspect;
     _displayLayer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
@@ -199,7 +202,25 @@ static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
     return YES;
 }
 
-- (BOOL)configureOutputWidth:(int)w height:(int)h hdr:(BOOL)hdr lightLevels:(NSData *)levels {
+- (BOOL)applyBrightness:(NSInteger)multiplier hdr:(BOOL)hdr {
+    if (_appliedBrightness == multiplier && (multiplier == 1 || _brightnessUsesPQ == hdr)) return YES;
+    NSURL *shader = nil;
+    if (multiplier != 1) {
+        NSString *name = [NSString stringWithFormat:@"Brightness-%@-%ld", hdr ? @"pq" : @"srgb", (long)multiplier];
+        shader = [NSBundle.mainBundle URLForResource:name withExtension:@"glsl"];
+        if (!shader) return NO;
+    }
+    mpv_node path = {.format = MPV_FORMAT_STRING, .u.string = (char *)shader.fileSystemRepresentation};
+    mpv_node_list files = {.num = shader ? 1 : 0, .values = &path};
+    mpv_node shaders = {.format = MPV_FORMAT_NODE_ARRAY, .u.list = &files};
+    if (mpv_set_property(_mpv, "glsl-shaders", MPV_FORMAT_NODE, &shaders) < 0) return NO;
+    _appliedBrightness = multiplier;
+    _brightnessUsesPQ = hdr;
+    return YES;
+}
+
+- (BOOL)configureOutputWidth:(int)w height:(int)h hdr:(BOOL)hdr video:(NSDictionary *)video brightness:(NSInteger)multiplier {
+    NSData *levels = hdr && [video[@"gamma"] isEqual:@"pq"] ? contentLightLevels(video, multiplier) : nil;
     __block BOOL prepared;
     dispatch_sync(_queue, ^{
         self->_canPresent = NO;
@@ -214,6 +235,10 @@ static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
         int peak = mpv_set_property_string(_mpv, "target-peak", hdr ? "10000" : "auto");
         if (prim < 0 || trc < 0 || peak < 0) { _targetHDR = -1; return NO; }
         _targetHDR = hdr;
+    }
+    if (![self applyBrightness:multiplier hdr:hdr]) {
+        // Recover the original image and its metadata if the selected shader is unavailable.
+        return multiplier != 1 && [self configureOutputWidth:w height:h hdr:hdr video:video brightness:1];
     }
     dispatch_async(_queue, ^{
         setLayerRange(self->_displayLayer, hdr);
@@ -307,12 +332,13 @@ static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
     return rc >= 0;
 }
 
-- (NSDictionary *)pollForHDRDisplay:(BOOL)supportsHDR {
+- (NSDictionary *)pollForHDRDisplay:(BOOL)supportsHDR brightness:(NSInteger)multiplier {
     if (!_mpv) return @{};
     NSMutableDictionary *out = [NSMutableDictionary dictionary];
     BOOL dirty = NO;
-    if (_lastDisplayHDR != supportsHDR) _needsOutput = YES;
+    if (_lastDisplayHDR != supportsHDR || _requestedBrightness != multiplier) _needsOutput = YES;
     _lastDisplayHDR = supportsHDR;
+    _requestedBrightness = multiplier;
     mpv_event *event;
     while ((event = mpv_wait_event(_mpv,0))->event_id != MPV_EVENT_NONE) {
         switch (event->event_id) {
@@ -371,9 +397,9 @@ static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
             int width = MAX(2,(int)round(w*scale)), height = MAX(2,(int)round(h*scale));
             BOOL pq = [video[@"gamma"] isEqual:@"pq"];
             BOOL hdr = supportsHDR && (pq || [video[@"gamma"] isEqual:@"hlg"]);
-            NSData *levels = hdr && pq ? contentLightLevels(video) : nil;
-            BOOL ready = [self configureOutputWidth:width height:height hdr:hdr lightLevels:levels];
-            if (!ready && hdr) ready = [self configureOutputWidth:width height:height hdr:NO lightLevels:nil];
+            BOOL ready = [self configureOutputWidth:width height:height hdr:hdr video:video brightness:multiplier];
+            if (!ready && hdr) ready = [self configureOutputWidth:width height:height hdr:NO video:video brightness:multiplier];
+            if (ready && _appliedBrightness != multiplier) out[@"brightnessUnavailable"] = @YES;
             _needsOutput = !ready;
         }
     }

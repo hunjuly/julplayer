@@ -7,7 +7,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)init NS_UNAVAILABLE;
 - (nullable instancetype)initWithError:(NSError **)error;
 - (BOOL)load:(NSString *)path paused:(BOOL)paused;
-- (NSDictionary<NSString *,id> *)pollForHDRDisplay:(BOOL)supportsHDR NS_SWIFT_NAME(poll(hdrDisplay:));
+- (NSDictionary<NSString *,id> *)pollForHDRDisplay:(BOOL)supportsHDR brightness:(NSInteger)multiplier
+    NS_SWIFT_NAME(poll(hdrDisplay:brightness:));
 - (nullable NSArray<NSDictionary<NSString *,id> *> *)trackList;
 - (void)setPictureInPictureDisplayLayer:(nullable AVSampleBufferDisplayLayer *)layer;
 - (void)setPaused:(BOOL)paused;

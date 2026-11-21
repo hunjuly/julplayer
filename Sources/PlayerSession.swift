@@ -39,6 +39,12 @@ enum SubtitleSize: String, CaseIterable {
     }
 }
 
+enum VideoBrightness: Int, CaseIterable {
+    case original = 1, twice = 2, fiveTimes = 5
+
+    var title: String { self == .original ? "원본 (1배)" : "\(rawValue)배" }
+}
+
 struct MediaStream: Identifiable, Equatable {
     let id: Int
     let kind: StreamKind
@@ -77,6 +83,9 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var position = 0.0
     @Published private(set) var playing = false
     @Published private(set) var volume: Double
+    var videoBrightness: VideoBrightness {
+        didSet { defaults.set(videoBrightness.rawValue, forKey: Self.brightnessKey) }
+    }
     @Published var subtitleSize: SubtitleSize {
         didSet {
             defaults.set(subtitleSize.rawValue, forKey: Self.subtitleSizeKey)
@@ -132,6 +141,7 @@ final class PlayerSession: ObservableObject {
     private static let volumeKey = "playbackVolume"
     private static let beforeMuteKey = "volumeBeforeMute"
     private static let subtitleSizeKey = "subtitleSize"
+    private static let brightnessKey = "videoBrightnessMultiplier"
     private let defaults: UserDefaults
     private var sidecarsReady = false
 
@@ -140,6 +150,7 @@ final class PlayerSession: ObservableObject {
         let initialVolume = 0.68
         defaults.register(defaults: [Self.volumeKey: initialVolume, Self.beforeMuteKey: initialVolume])
         volume = defaults.double(forKey: Self.volumeKey)
+        videoBrightness = VideoBrightness(rawValue: defaults.integer(forKey: Self.brightnessKey)) ?? .original
         subtitleSize = defaults.string(forKey: Self.subtitleSizeKey).flatMap(SubtitleSize.init(rawValue:)) ?? .normal
         do { engine = try VideoEngine.make() }
         catch { engine = nil; notice = error.localizedDescription }
@@ -187,7 +198,11 @@ final class PlayerSession: ObservableObject {
         guard let current, let player = engine else { return }
         let screen = (pipActive ? pip?.screen : nil) ?? window?.screen
         let supportsHDR = (screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1
-        let changes = player.poll(hdrDisplay: supportsHDR)
+        let changes = player.poll(hdrDisplay: supportsHDR, brightness: videoBrightness.rawValue)
+        if changes["brightnessUnavailable"] as? Bool == true {
+            videoBrightness = .original
+            show("선택한 영상 밝기를 적용할 수 없어 원본 밝기로 재생합니다.")
+        }
         if let error = changes["error"] as? String {
             playRequested = false; ended = false; loaded = false; videoDisplaySize = nil; setPlayingUI(false)
             show("재생할 수 없습니다. \(current.title) (\(error))", seconds: 12)
