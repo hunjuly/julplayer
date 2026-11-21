@@ -305,9 +305,9 @@ static id nodeValue(const mpv_node *n) {
     NSString *value = track < 0 ? @"no" : @(track).stringValue;
     return mpv_set_property_string(_mpv,property.UTF8String,value.UTF8String) >= 0;
 }
-- (BOOL)addSubtitle:(NSString *)path select:(BOOL)select {
+- (BOOL)addSubtitle:(NSString *)path {
     if (!_mpv) return NO;
-    const char *args[] = {"sub-add",path.fileSystemRepresentation,select ? "cached" : "auto",NULL};
+    const char *args[] = {"sub-add",path.fileSystemRepresentation,"auto",NULL};
     return mpv_command(_mpv,args) >= 0;
 }
 - (void)stop {

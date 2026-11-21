@@ -55,6 +55,10 @@ struct MediaStream: Identifiable, Equatable {
         var parts = [entry["title"] as? String, language].compactMap { $0 }.filter { !$0.isEmpty }
         if parts.count == 2 && parts[0] == parts[1] { parts.removeLast() }
         if parts.isEmpty { parts = [externalURL?.lastPathComponent ?? "트랙 \(id)"] }
+        if kind == .subtitle, let externalURL {
+            let filename = externalURL.lastPathComponent
+            parts = ["외부", filename] + parts.filter { $0 != filename && !filename.hasSuffix("." + $0) }
+        }
         if let codec = entry["codec"] as? String, kind == .audio { parts.append(codec.uppercased()) }
         title = parts.joined(separator: " · ")
     }
@@ -123,6 +127,7 @@ final class PlayerSession: ObservableObject {
     private var ended = false
     private var manualSubs: [URL: [URL]] = [:]
     private var pendingSubtitles = [URL]()
+    private var explicitSubtitleID: Int?
     private var fileTicket = 0
     private static let volumeKey = "playbackVolume"
     private static let beforeMuteKey = "volumeBeforeMute"
@@ -283,6 +288,14 @@ final class PlayerSession: ObservableObject {
         return saved > 0 && saved <= count ? saved : 1
     }
 
+    private func preferredTrack(in options: [MediaStream], ordinal: Int) -> MediaStream {
+        let remembered = options[ordinal - 1]
+        guard remembered.kind == .subtitle else { return remembered }
+        if let explicitSubtitleID, let chosen = options.first(where: { $0.id == explicitSubtitleID }) { return chosen }
+        if remembered.externalURL != nil { return remembered }
+        return options.first { $0.externalURL != nil } ?? remembered
+    }
+
     private func applyStreamChoices(to tracks: [MediaStream]) {
         var values = tracks
         for kind in StreamKind.allCases {
@@ -290,7 +303,7 @@ final class PlayerSession: ObservableObject {
             guard !options.isEmpty else { continue }
             let number = ordinal(for: kind, count: options.count)
             let disabled = defaults.bool(forKey: kind.disabledKey)
-            let target = disabled ? -1 : options[number - 1].id
+            let target = disabled ? -1 : preferredTrack(in: options, ordinal: number).id
             if (options.first(where: \.selected)?.id ?? -1) != target {
                 guard engine?.selectTrack(target, property: kind.trackProperty) == true else { continue }
                 for i in values.indices where values[i].kind == kind { values[i].selected = values[i].id == target }
@@ -304,20 +317,28 @@ final class PlayerSession: ObservableObject {
     }
 
     func selectStream(_ kind: StreamKind, id: Int) {
-        let choices = streams.filter { $0.kind == kind }
+        _ = selectStream(kind, id: id, in: streams.filter { $0.kind == kind })
+    }
+
+    private func selectStream(_ kind: StreamKind, id: Int, in choices: [MediaStream], rememberTrack: Bool = true) -> Bool {
         let index = choices.firstIndex { $0.id == id }
-        guard loaded, id < 0 || index != nil else { return }
-        guard engine?.selectTrack(id, property: kind.trackProperty) == true else { show("스트림을 전환할 수 없습니다."); return }
-        if let index { defaults.set(index + 1, forKey: kind.ordinalKey) }
+        guard loaded, id < 0 || index != nil else { return false }
+        guard engine?.selectTrack(id, property: kind.trackProperty) == true else { show("스트림을 전환할 수 없습니다."); return false }
+        if let index, rememberTrack {
+            defaults.set(index + 1, forKey: kind.ordinalKey)
+            if kind == .subtitle { explicitSubtitleID = id }
+        }
         defaults.set(id < 0, forKey: kind.disabledKey)
         if let rows = engine?.trackList() { applyStreamChoices(to: rows.compactMap(MediaStream.init)) }
         reveal()
+        return true
     }
     func toggleCaptions() {
         let subs = streams.filter { $0.kind == .subtitle }
         guard !subs.isEmpty else { return }
-        let index = ordinal(for: .subtitle, count: subs.count) - 1
-        selectStream(.subtitle, id: subs.contains(where: \.selected) ? -1 : subs[index].id)
+        let preferred = preferredTrack(in: subs, ordinal: ordinal(for: .subtitle, count: subs.count))
+        _ = selectStream(.subtitle, id: subs.contains(where: \.selected) ? -1 : preferred.id,
+                         in: subs, rememberTrack: false)
     }
     func setDelay(_ kind: StreamKind, seconds: Double) {
         guard seconds.isFinite else { return }
@@ -333,6 +354,7 @@ final class PlayerSession: ObservableObject {
     func select(_ clip: Clip?) {
         fileTicket += 1
         sidecarsReady = false
+        explicitSubtitleID = nil
         pendingSubtitles.removeAll()
         playRequested = clip != nil
         videoDisplaySize = nil
@@ -390,21 +412,26 @@ final class PlayerSession: ObservableObject {
         picker.beginSheetModal(for: window) { [weak self] answer in if answer == .OK { self?.addSubtitles(picker.urls) } }
     }
     private func addSubtitles(_ urls: [URL]) {
-        guard current != nil, !urls.isEmpty else { return }
+        guard let movie = current?.url, !urls.isEmpty, let engine else { return }
         guard loaded && sidecarsReady else { pendingSubtitles += urls; return }
         for url in urls where LocalMedia.isSubtitle(url) {
-            if engine?.addSubtitle(url.path, select: true) == true, let movie = current?.url {
-                var prior = manualSubs[movie, default: []]
-                if !prior.contains(url) { prior.append(url); manualSubs[movie] = prior }
-                if let rows = engine?.trackList() {
-                    let tracks = rows.compactMap(MediaStream.init)
-                    let subtitles = tracks.filter { $0.kind == .subtitle }
-                    if let index = subtitles.firstIndex(where: { $0.externalURL == url.standardizedFileURL }) {
-                        defaults.set(index + 1, forKey: StreamKind.subtitle.ordinalKey)
-                        defaults.set(false, forKey: StreamKind.subtitle.disabledKey)
-                    }
-                    applyStreamChoices(to: tracks)
+            let file = url.standardizedFileURL
+            let matchesFile: (MediaStream) -> Bool = { $0.externalURL?.path == file.path }
+            var choices = streams.filter { $0.kind == .subtitle }
+            if !choices.contains(where: matchesFile) {
+                guard engine.addSubtitle(file.path), let rows = engine.trackList() else {
+                    show("자막 파일을 열 수 없습니다. " + file.lastPathComponent)
+                    continue
                 }
+                choices = rows.compactMap(MediaStream.init).filter { $0.kind == .subtitle }
+            }
+            guard let track = choices.first(where: matchesFile) else {
+                show("자막 트랙을 찾을 수 없습니다. " + file.lastPathComponent)
+                continue
+            }
+            guard selectStream(.subtitle, id: track.id, in: choices) else { continue }
+            if !manualSubs[movie, default: []].contains(where: { $0.path == file.path }) {
+                manualSubs[movie, default: []].append(file)
             }
         }
     }
@@ -412,12 +439,12 @@ final class PlayerSession: ObservableObject {
         Task {
             let files = await Task.detached(priority: .userInitiated) { LocalMedia.sidecars(for: movie) }.value
             guard ticket == fileTicket, loaded, let engine else { return }
-            var used = Set(streams.compactMap(\.externalURL))
+            var used = Set(streams.compactMap { $0.externalURL?.path })
             let all = files + manualSubs[movie, default: []]
-            for url in all where used.insert(url.standardizedFileURL).inserted {
+            for url in all where used.insert(url.standardizedFileURL.path).inserted {
                 // VobSub's .idx loads the companion .sub by itself.
                 if url.pathExtension.lowercased() == "sub" && all.contains(where: { $0.deletingPathExtension() == url.deletingPathExtension() && $0.pathExtension.lowercased() == "idx" }) { continue }
-                _ = engine.addSubtitle(url.path, select: false)
+                _ = engine.addSubtitle(url.path)
             }
             sidecarsReady = true
             if let rows = engine.trackList() { applyStreamChoices(to: rows.compactMap(MediaStream.init)) }

@@ -14,7 +14,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)seek:(double)seconds;
 - (BOOL)setNumber:(double)value forOption:(NSString *)option;
 - (BOOL)selectTrack:(NSInteger)track property:(NSString *)property;
-- (BOOL)addSubtitle:(NSString *)path select:(BOOL)select;
+- (BOOL)addSubtitle:(NSString *)path;
 - (void)stop;
 - (void)shutdown;
 @end
