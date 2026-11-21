@@ -55,7 +55,7 @@ private final class PlayerHost: NSHostingView<PlayerView> {
                   point.x < bounds.maxX - PlayerWindowLayout.playlistSpan else { return false }
         }
         let fingerDelta = event.isDirectionInvertedFromDevice ? -event.scrollingDeltaY : event.scrollingDeltaY
-        let change = event.hasPreciseScrollingDeltas ? fingerDelta / 500 : min(1, max(-1, fingerDelta)) * 0.05
+        let change = event.hasPreciseScrollingDeltas ? fingerDelta / 250 : min(1, max(-1, fingerDelta)) * 0.10
         session.setVolume(session.volume + change)
         return true
     }
