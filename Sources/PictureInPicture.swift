@@ -42,6 +42,7 @@ final class PictureInPicture: NSObject, @preconcurrency AVPictureInPictureContro
     private var controller: AVPictureInPictureController?
     private var phase = Phase.idle
     private var panelOutput: VideoSurface.SurfaceView?
+    var screen: NSScreen? { panelOutput?.window?.screen }
     private var previouslyVisiblePanels: Set<ObjectIdentifier> = []
     private var minimizedPlayer = false
     private var returnToFullScreen = false

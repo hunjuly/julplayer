@@ -33,6 +33,31 @@ static id nodeValue(const mpv_node *n) {
     }
 }
 
+static NSData *contentLightLevels(NSDictionary *video) {
+    double peak = [video[@"max-cll"] doubleValue], average = [video[@"max-fall"] doubleValue];
+    if (!(peak > 0 && peak <= 10000 && average >= 0 && average <= peak)) return nil;
+    uint16_t levels[] = {CFSwapInt16HostToBig((uint16_t)lround(peak)),
+                         CFSwapInt16HostToBig((uint16_t)lround(average))};
+    return [NSData dataWithBytes:levels length:sizeof(levels)];
+}
+
+static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
+    if (!layer) return;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+    if (@available(macOS 26, *)) {
+        layer.preferredDynamicRange = hdr ? CADynamicRangeHigh : CADynamicRangeStandard;
+    } else
+#endif
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+    if (@available(macOS 14, *)) {
+        layer.wantsExtendedDynamicRangeContent = hdr;
+    }
+#endif
+    [CATransaction commit];
+}
+
 @implementation VideoEngine {
     mpv_handle *_mpv;
     mpv_render_context *_render;
@@ -43,8 +68,12 @@ static id nodeValue(const mpv_node *n) {
     AVSampleBufferDisplayLayer *_pictureInPictureLayer;
     CVPixelBufferPoolRef _pool;
     CMVideoFormatDescriptionRef _format;
+    NSData *_lightLevels;
     CMTimebaseRef _clock;
     int _width, _height;
+    BOOL _outputHDR, _canPresent; // Render queue.
+    int _targetHDR; // mpv target on the player thread. -1 means a partial option change needs a retry.
+    BOOL _lastDisplayHDR, _needsOutput, _awaitingFirstFrame;
     int64_t _entry;
     BOOL _loaded;
     NSString *_requestedPath;
@@ -54,6 +83,7 @@ static id nodeValue(const mpv_node *n) {
 
 - (instancetype)initWithError:(NSError **)error {
     if (!(self = [super init])) return nil;
+    _targetHDR = -1;
     _displayLayer = [AVSampleBufferDisplayLayer layer];
     _displayLayer.videoGravity = AVLayerVideoGravityResizeAspect;
     _displayLayer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
@@ -65,6 +95,7 @@ static id nodeValue(const mpv_node *n) {
     int status = MPV_ERROR_NOMEM;
     if (_mpv) {
         NSDictionary *opts = @{@"vo":@"libmpv", @"hwdec":@"videotoolbox-copy", @"config":@"no",
+            @"tone-mapping":@"bt.2390",
             @"idle":@"yes", @"keep-open":@"yes", @"pause":@"yes", @"osc":@"no",
             @"terminal":@"no", @"load-scripts":@"no", @"sub-auto":@"no", @"audio-file-auto":@"no",
             @"sub-font":@"Apple SD Gothic Neo", @"sub-font-size":@"36", @"sub-bold":@"yes",
@@ -92,6 +123,7 @@ static id nodeValue(const mpv_node *n) {
     mpv_observe_property(_mpv, 1, "track-list", MPV_FORMAT_NONE);
     mpv_observe_property(_mpv, 2, "sid", MPV_FORMAT_NONE);
     mpv_observe_property(_mpv, 3, "aid", MPV_FORMAT_NONE);
+    mpv_observe_property(_mpv, 4, "video-out-params/gamma", MPV_FORMAT_NONE);
     return self;
 }
 
@@ -119,23 +151,91 @@ static id nodeValue(const mpv_node *n) {
     return rc;
 }
 
-- (void)sizeToWidth:(int)w height:(int)h {
-    if (w <= 0 || h <= 0 || (_width == w && _height == h)) return;
-    _width = w; _height = h;
-    if (_pool) { CFRelease(_pool); _pool = NULL; }
-    if (_format) { CFRelease(_format); _format = NULL; }
+- (BOOL)attachBuffer:(CVPixelBufferRef)buffer hdr:(BOOL)hdr {
+    IOSurfaceRef surface = CVPixelBufferGetIOSurface(buffer);
+    if (!surface) return NO;
+    glBindTexture(GL_TEXTURE_RECTANGLE, _texture);
+    CGLError error = CGLTexImageIOSurface2D(_gl, GL_TEXTURE_RECTANGLE, hdr ? GL_RGB10_A2 : GL_RGBA8,
+        (GLsizei)CVPixelBufferGetWidth(buffer), (GLsizei)CVPixelBufferGetHeight(buffer), GL_BGRA,
+        hdr ? GL_UNSIGNED_INT_2_10_10_10_REV : GL_UNSIGNED_INT_8_8_8_8_REV, surface, 0);
+    if (error != kCGLNoError) return NO;
+    glBindFramebuffer(GL_FRAMEBUFFER, _fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE, _texture, 0);
+    return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+}
+
+- (BOOL)prepareOutputWidth:(int)w height:(int)h hdr:(BOOL)hdr lightLevels:(NSData *)levels {
+    if (_pool && _width == w && _height == h && _outputHDR == hdr &&
+        (_lightLevels == levels || [_lightLevels isEqual:levels])) return YES;
+    NSMutableDictionary *tags = [@{
+        (id)kCVImageBufferColorPrimariesKey: hdr ? (id)kCVImageBufferColorPrimaries_ITU_R_2020 : (id)kCVImageBufferColorPrimaries_ITU_R_709_2,
+        (id)kCVImageBufferTransferFunctionKey: hdr ? (id)kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ : (id)kCVImageBufferTransferFunction_sRGB
+    } mutableCopy];
+    tags[(id)kCVImageBufferCGColorSpaceKey] = CFBridgingRelease(CGColorSpaceCreateWithName(hdr ? kCGColorSpaceITUR_2100_PQ : kCGColorSpaceSRGB));
+    tags[(id)kCVImageBufferContentLightLevelInfoKey] = levels;
     NSDictionary *props = @{
         (id)kCVPixelBufferWidthKey:@(w), (id)kCVPixelBufferHeightKey:@(h),
-        (id)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_32BGRA),
+        (id)kCVPixelBufferPixelFormatTypeKey:@(hdr ? kCVPixelFormatType_ARGB2101010LEPacked : kCVPixelFormatType_32BGRA),
+        (id)kCVBufferPropagatedAttachmentsKey:tags,
         (id)kCVPixelBufferIOSurfacePropertiesKey:@{}, (id)kCVPixelBufferOpenGLCompatibilityKey:@YES};
-    CVPixelBufferPoolCreate(NULL, NULL, (__bridge CFDictionaryRef)props, &_pool);
+    CVPixelBufferPoolRef pool = NULL;
+    if (CVPixelBufferPoolCreate(NULL, NULL, (__bridge CFDictionaryRef)props, &pool) != kCVReturnSuccess) return NO;
+    if (hdr) {
+        // Check the driver's 10-bit framebuffer support before switching mpv to PQ.
+        CVPixelBufferRef probe = NULL;
+        CGLSetCurrentContext(_gl);
+        BOOL usable = CVPixelBufferPoolCreatePixelBuffer(NULL, pool, &probe) == kCVReturnSuccess &&
+                      [self attachBuffer:probe hdr:YES];
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_RECTANGLE, 0);
+        CGLSetCurrentContext(NULL);
+        if (probe) CVPixelBufferRelease(probe);
+        if (!usable) { CFRelease(pool); return NO; }
+    }
+    if (_pool) CFRelease(_pool);
+    _pool = pool;
+    _width = w; _height = h; _outputHDR = hdr; _lightLevels = levels;
+    if (_format) { CFRelease(_format); _format = NULL; }
+    return YES;
+}
+
+- (BOOL)configureOutputWidth:(int)w height:(int)h hdr:(BOOL)hdr lightLevels:(NSData *)levels {
+    __block BOOL prepared;
+    dispatch_sync(_queue, ^{
+        self->_canPresent = NO;
+        prepared = [self prepareOutputWidth:w height:h hdr:hdr lightLevels:levels];
+    });
+    if (!prepared) return NO;
+    if (_targetHDR != hdr) {
+        // mpv client calls must run outside its render queue.
+        int prim = mpv_set_property_string(_mpv, "target-prim", hdr ? "bt.2020" : "bt.709");
+        int trc = mpv_set_property_string(_mpv, "target-trc", hdr ? "pq" : "srgb");
+        // Preserve the full absolute PQ scale and let macOS fit it to the HDR display.
+        int peak = mpv_set_property_string(_mpv, "target-peak", hdr ? "10000" : "auto");
+        if (prim < 0 || trc < 0 || peak < 0) { _targetHDR = -1; return NO; }
+        _targetHDR = hdr;
+    }
+    dispatch_async(_queue, ^{
+        setLayerRange(self->_displayLayer, hdr);
+        setLayerRange(self->_pictureInPictureLayer, hdr);
+        self->_canPresent = YES;
+        [self renderFrame:YES];
+    });
+    return YES;
 }
 
 - (void)renderFrame:(BOOL)forced {
     if (!_render) return;
     CGLSetCurrentContext(_gl);
     uint64_t flags = mpv_render_context_update(_render);
-    if ((!forced && !(flags & MPV_RENDER_UPDATE_FRAME)) || !_pool) {
+    if (!_canPresent && (flags & MPV_RENDER_UPDATE_FRAME)) {
+        // Let startup advance while the new file's color information is still pending.
+        int skip = 1, block = 0;
+        mpv_render_param params[] = {{MPV_RENDER_PARAM_SKIP_RENDERING,&skip},
+            {MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,&block},{0}};
+        mpv_render_context_render(_render,params);
+    }
+    if ((!forced && !(flags & MPV_RENDER_UPDATE_FRAME)) || !_canPresent) {
         CGLSetCurrentContext(NULL);
         return;
     }
@@ -146,16 +246,11 @@ static id nodeValue(const mpv_node *n) {
         CGLSetCurrentContext(NULL);
         return;
     }
-    glBindTexture(GL_TEXTURE_RECTANGLE,_texture);
-    CGLError err = CGLTexImageIOSurface2D(_gl,GL_TEXTURE_RECTANGLE,GL_RGBA,_width,_height,
-                                          GL_BGRA,GL_UNSIGNED_INT_8_8_8_8_REV,CVPixelBufferGetIOSurface(buffer),0);
-    glBindFramebuffer(GL_FRAMEBUFFER,_fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_RECTANGLE,_texture,0);
-    if (err == kCGLNoError && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
-        mpv_opengl_fbo target = {(int)_fbo,_width,_height,GL_RGBA8};
-        int flip = 0, block = 0;
+    if ([self attachBuffer:buffer hdr:_outputHDR]) {
+        mpv_opengl_fbo target = {(int)_fbo,_width,_height,_outputHDR ? GL_RGB10_A2 : GL_RGBA8};
+        int flip = 0, block = 0, depth = _outputHDR ? 10 : 8;
         mpv_render_param params[] = {{MPV_RENDER_PARAM_OPENGL_FBO,&target},{MPV_RENDER_PARAM_FLIP_Y,&flip},
-            {MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,&block},{0}};
+            {MPV_RENDER_PARAM_DEPTH,&depth},{MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,&block},{0}};
         if (mpv_render_context_render(_render,params) >= 0) {
             glFinish();
             if (!_format) CMVideoFormatDescriptionCreateForImageBuffer(NULL, buffer, &_format);
@@ -182,21 +277,26 @@ static id nodeValue(const mpv_node *n) {
         if (self->_pictureInPictureLayer == layer) return;
         [self->_pictureInPictureLayer flushAndRemoveImage];
         self->_pictureInPictureLayer = layer;
+        setLayerRange(layer, self->_canPresent && self->_outputHDR);
         if (layer) [self renderFrame:YES];
     });
 }
 
 - (void)clearDisplayedImages {
+    _canPresent = NO;
     [_displayLayer flushAndRemoveImage];
     [_pictureInPictureLayer flushAndRemoveImage];
+    setLayerRange(_displayLayer, NO);
+    setLayerRange(_pictureInPictureLayer, NO);
 }
 
 - (BOOL)load:(NSString *)path paused:(BOOL)paused {
     if (!_mpv) return NO;
     _loaded = NO;
+    _needsOutput = YES; _awaitingFirstFrame = YES;
     _requestedPath = [path copy];
+    dispatch_sync(_queue, ^{ [self clearDisplayedImages]; });
     while (mpv_wait_event(_mpv,0)->event_id != MPV_EVENT_NONE) {}
-    dispatch_async(_queue, ^{ [self clearDisplayedImages]; });
     [self setPaused:paused];
     [self setNumber:0 forOption:@"sub-delay"];
     [self setNumber:0 forOption:@"audio-delay"];
@@ -207,10 +307,12 @@ static id nodeValue(const mpv_node *n) {
     return rc >= 0;
 }
 
-- (NSDictionary *)poll {
+- (NSDictionary *)pollForHDRDisplay:(BOOL)supportsHDR {
     if (!_mpv) return @{};
     NSMutableDictionary *out = [NSMutableDictionary dictionary];
-    BOOL dirty = NO, resize = NO;
+    BOOL dirty = NO;
+    if (_lastDisplayHDR != supportsHDR) _needsOutput = YES;
+    _lastDisplayHDR = supportsHDR;
     mpv_event *event;
     while ((event = mpv_wait_event(_mpv,0))->event_id != MPV_EVENT_NONE) {
         switch (event->event_id) {
@@ -219,7 +321,7 @@ static id nodeValue(const mpv_node *n) {
                 NSString *actual = path ? [NSFileManager.defaultManager stringWithFileSystemRepresentation:path length:strlen(path)] : nil;
                 BOOL matches = actual && [_requestedPath.precomposedStringWithCanonicalMapping isEqualToString:actual.precomposedStringWithCanonicalMapping];
                 if (path) mpv_free(path);
-                if (matches) { _loaded = YES; out[@"loaded"] = @YES; dirty = YES; resize = YES; }
+                if (matches) { _loaded = YES; out[@"loaded"] = @YES; dirty = YES; _needsOutput = YES; }
                 break;
             }
             case MPV_EVENT_END_FILE: {
@@ -235,20 +337,29 @@ static id nodeValue(const mpv_node *n) {
                 }
                 break;
             }
-            case MPV_EVENT_VIDEO_RECONFIG: resize = YES; break;
-            case MPV_EVENT_PROPERTY_CHANGE: dirty = YES; break;
+            case MPV_EVENT_VIDEO_RECONFIG: _needsOutput = YES; break;
+            case MPV_EVENT_PLAYBACK_RESTART:
+                // FILE_LOADED can still report the previous file's video-out-params.
+                if (_loaded) _awaitingFirstFrame = NO;
+                break;
+            case MPV_EVENT_PROPERTY_CHANGE:
+                if (event->reply_userdata == 4) _needsOutput = YES;
+                else dirty = YES;
+                break;
             default: break;
         }
     }
     if (!_loaded) return out;
-    if (resize) {
+    if (_needsOutput && !_awaitingFirstFrame) {
         int64_t w = 0, h = 0;
         mpv_get_property(_mpv,"dwidth",MPV_FORMAT_INT64,&w);
         mpv_get_property(_mpv,"dheight",MPV_FORMAT_INT64,&h);
-        if (w > 0 && h > 0) {
+        mpv_node params;
+        if (w > 0 && h > 0 && mpv_get_property(_mpv,"video-out-params",MPV_FORMAT_NODE,&params) >= 0) {
+            NSDictionary *video = nodeValue(&params);
+            mpv_free_node_contents(&params);
             // mpv reports display dimensions before applying the output rotation.
-            int64_t rotation = 0;
-            mpv_get_property(_mpv,"video-out-params/rotate",MPV_FORMAT_INT64,&rotation);
+            int64_t rotation = [video[@"rotate"] longLongValue];
             if (llabs(rotation % 180) == 90) {
                 int64_t unrotatedWidth = w;
                 w = h;
@@ -258,7 +369,12 @@ static id nodeValue(const mpv_node *n) {
             out[@"displayHeight"] = @(h);
             double scale = fmin(1.0, 4096.0 / MAX(w,h));
             int width = MAX(2,(int)round(w*scale)), height = MAX(2,(int)round(h*scale));
-            dispatch_async(_queue, ^{ [self sizeToWidth:width height:height]; [self renderFrame:YES]; });
+            BOOL pq = [video[@"gamma"] isEqual:@"pq"];
+            BOOL hdr = supportsHDR && (pq || [video[@"gamma"] isEqual:@"hlg"]);
+            NSData *levels = hdr && pq ? contentLightLevels(video) : nil;
+            BOOL ready = [self configureOutputWidth:width height:height hdr:hdr lightLevels:levels];
+            if (!ready && hdr) ready = [self configureOutputWidth:width height:height hdr:NO lightLevels:nil];
+            _needsOutput = !ready;
         }
     }
     if (dirty) out[@"tracks"] = [self trackList];

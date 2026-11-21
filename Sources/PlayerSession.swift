@@ -184,7 +184,10 @@ final class PlayerSession: ObservableObject {
         let now = ProcessInfo.processInfo.systemUptime
         if notice != nil && now >= noticeEnds { notice = nil }
         if pipActive { pip?.attachPanelOutputIfNeeded() }
-        guard let current, let changes = engine?.poll() else { return }
+        guard let current, let player = engine else { return }
+        let screen = (pipActive ? pip?.screen : nil) ?? window?.screen
+        let supportsHDR = (screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1
+        let changes = player.poll(hdrDisplay: supportsHDR)
         if let error = changes["error"] as? String {
             playRequested = false; ended = false; loaded = false; videoDisplaySize = nil; setPlayingUI(false)
             show("재생할 수 없습니다. \(current.title) (\(error))", seconds: 12)
