@@ -395,8 +395,9 @@ static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
             out[@"displayHeight"] = @(h);
             double scale = fmin(1.0, 4096.0 / MAX(w,h));
             int width = MAX(2,(int)round(w*scale)), height = MAX(2,(int)round(h*scale));
-            BOOL pq = [video[@"gamma"] isEqual:@"pq"];
-            BOOL hdr = supportsHDR && (pq || [video[@"gamma"] isEqual:@"hlg"]);
+            BOOL sourceHDR = [video[@"gamma"] isEqual:@"pq"] || [video[@"gamma"] isEqual:@"hlg"];
+            out[@"sourceHDR"] = @(sourceHDR);
+            BOOL hdr = supportsHDR && sourceHDR;
             BOOL ready = [self configureOutputWidth:width height:height hdr:hdr video:video brightness:multiplier];
             if (!ready && hdr) ready = [self configureOutputWidth:width height:height hdr:NO video:video brightness:multiplier];
             if (ready && _appliedBrightness != multiplier) out[@"brightnessUnavailable"] = @YES;

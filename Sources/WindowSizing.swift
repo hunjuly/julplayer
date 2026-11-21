@@ -57,11 +57,11 @@ enum PlayerWindowLayout {
 
 struct PlaybackControlLayout: Equatable {
     enum Item: Hashable {
-        case mute, volume, audio, subtitles, previous, back60, back10, play, ahead10, ahead60, next, trash
+        case previous, next, mute, volume, brightness, audio, subtitles, trash
 
         var width: CGFloat {
             switch self {
-            case .play: return 32
+            case .brightness: return 50
             case .volume: return 52
             case .trash: return PlaybackControlLayout.iconWidth + 7
             default: return PlaybackControlLayout.iconWidth
@@ -72,48 +72,57 @@ struct PlaybackControlLayout: Equatable {
     static let inset: CGFloat = 8
     static let iconWidth: CGFloat = 29
     static let spacing: CGFloat = 3
-    private static let sectionGap: CGFloat = 9
+    static let sectionGap: CGFloat = 8
+    static let transportSpacing: CGFloat = 12
     private static let sections: [[Item]] = [
+        [.previous, .next],
         [.mute, .volume],
-        [.previous, .back60, .back10, .play, .ahead10, .ahead60, .next],
-        [.audio, .subtitles, .trash]
+        [.brightness, .audio, .subtitles, .trash]
     ]
-    // Reveal related pairs together. Keep the volume slider until after the buttons fit.
     private static let priorities: [[Item]] = [
-        [.back10, .ahead10], [.previous, .next], [.mute], [.back60, .ahead60],
-        [.subtitles], [.audio], [.trash], [.volume]
+        [.brightness], [.previous, .next], [.mute], [.subtitles], [.audio], [.trash], [.volume]
     ]
 
-    let leading, transport, trailing: [Item]
-    let leadingSpan, trailingSpan: CGFloat
-    var playOnly: Bool { transport.count == 1 }
-    var barHeight: CGFloat { playOnly ? 44 : 68 }
+    let files, sound, options: [Item]
+    let playOnly, stackedFooter, showsLongSeeks: Bool
+    let barHeight, playDiameter, shortSeekDiameter, longSeekDiameter: CGFloat
 
-    private static func rowWidth(_ items: [Item]) -> CGFloat {
-        items.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(0, items.count - 1))
+    // Each nonempty group shares a row with the timeline (or a spacer in the two-row layout).
+    private static func footerWidth(for items: Set<Item>, timeline: CGFloat) -> CGFloat {
+        sections.reduce(timeline) { width, section in
+            let group = section.filter(items.contains)
+            guard !group.isEmpty else { return width }
+            return width + sectionGap + group.reduce(0) { $0 + $1.width } + spacing * CGFloat(group.count - 1)
+        }
     }
 
-    init(width: CGFloat) {
+    init(size: CGSize, sourceIsHDR: Bool) {
+        let width = size.width
         let available = max(0, width - 2 * Self.inset)
-        var visible: Set<Item> = [.play]
-        if width > PlayerWindowLayout.minimumContent.width + 1 {
+        let items = Set(Self.sections.joined().filter { sourceIsHDR || $0 != .brightness })
+        playOnly = width <= PlayerWindowLayout.minimumContent.width + 1
+        stackedFooter = !playOnly && size.height >= 220 && Self.footerWidth(for: items, timeline: 250) > available
+        barHeight = playOnly ? 0 : (stackedFooter ? 66 : 42)
+        let clearDiameter = size.height - 2 * (max(40, barHeight) + 6)
+        playDiameter = min(width >= 900 ? 80 : 72, max(44, clearDiameter))
+        shortSeekDiameter = max(42, (playDiameter * 0.76).rounded())
+        longSeekDiameter = max(36, (playDiameter * 0.60).rounded())
+        let fullTransport = playDiameter + 2 * (shortSeekDiameter + longSeekDiameter) + 4 * Self.transportSpacing
+        showsLongSeeks = !playOnly && fullTransport <= available
+
+        var visible = Set<Item>()
+        if !playOnly {
             for group in Self.priorities {
+                guard group.allSatisfy(items.contains) else { continue }
                 let candidate = visible.union(group)
-                let sections = Self.sections.map { $0.filter(candidate.contains) }.filter { !$0.isEmpty }
-                let required = sections.map(Self.rowWidth).reduce(0, +) + CGFloat(sections.count - 1) * Self.sectionGap
-                guard required <= available else { break }
-                visible = candidate
+                if Self.footerWidth(for: candidate, timeline: stackedFooter ? 0 : 164) <= available {
+                    visible = candidate
+                }
             }
         }
-        leading = Self.sections[0].filter(visible.contains)
-        transport = Self.sections[1].filter(visible.contains)
-        trailing = Self.sections[2].filter(visible.contains)
-        // Center transport whenever possible, then borrow space from the shorter side.
-        let sides = max(0, available - Self.rowWidth(transport))
-        let minLeft = leading.isEmpty ? 0 : Self.rowWidth(leading) + Self.sectionGap
-        let minRight = trailing.isEmpty ? 0 : Self.rowWidth(trailing) + Self.sectionGap
-        leadingSpan = min(max(sides / 2, minLeft), max(0, sides - minRight))
-        trailingSpan = sides - leadingSpan
+        files = Self.sections[0].filter(visible.contains)
+        sound = Self.sections[1].filter(visible.contains)
+        options = Self.sections[2].filter(visible.contains)
     }
 }
 

@@ -437,9 +437,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         play.addItem(.separator())
         let brightnessItem = play.addItem(withTitle: "영상 밝기", action: nil, keyEquivalent: "")
         let brightnessMenu = NSMenu(title: brightnessItem.title)
-        for brightness in VideoBrightness.allCases {
-            add(brightnessMenu, brightness.title, #selector(chooseBrightness(_:)), target: self).representedObject = brightness
-        }
+        let brightnessSlider = NSMenuItem()
+        let brightnessView = NSHostingView(rootView: BrightnessPanel(session: session))
+        brightnessView.frame.size = brightnessView.fittingSize
+        brightnessSlider.view = brightnessView
+        brightnessMenu.addItem(brightnessSlider)
         brightnessItem.submenu = brightnessMenu
         add(play, "음소거 전환", #selector(toggleMute), key: "m", modifiers: [], target: self)
         add(play, "자막 켜기 / 끄기", #selector(toggleCaptions), key: "c", modifiers: [], target: self)
@@ -531,16 +533,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     @objc private func backward() { session.seek(to: session.position - 10) }
     @objc private func forward() { session.seek(to: session.position + 10) }
     @objc private func toggleMute() { session.toggleMute() }
-    @objc private func chooseBrightness(_ sender: NSMenuItem) {
-        if let brightness = sender.representedObject as? VideoBrightness { session.videoBrightness = brightness }
-    }
     @objc private func fullScreen() { window.toggleFullScreen(nil) }
     @objc private func toggleCaptions() { session.toggleCaptions() }
     @objc private func chooseSubtitleSize(_ sender: NSMenuItem) {
         if let size = sender.representedObject as? SubtitleSize { session.subtitleSize = size }
     }
-    @objc private func audioPanel() { session.panel = .audio }
-    @objc private func subtitlePanel() { session.panel = .subtitle }
+    @objc private func audioPanel() { session.panel = .stream(.audio) }
+    @objc private func subtitlePanel() { session.panel = .stream(.subtitle) }
     @objc private func previousFile() { session.stepFile(-1) }
     @objc private func nextFile() { session.stepFile(1) }
     @objc private func back60() { session.seek(to: session.position - 60) }
@@ -560,10 +559,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(associate(_:)) { return !associatingFiles }
-        if let brightness = item.representedObject as? VideoBrightness {
-            item.state = brightness == session.videoBrightness ? .on : .off
-            return true
-        }
         if let size = item.representedObject as? SubtitleSize {
             item.state = size == session.subtitleSize ? .on : .off
             return true

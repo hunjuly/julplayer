@@ -39,10 +39,9 @@ enum SubtitleSize: String, CaseIterable {
     }
 }
 
-enum VideoBrightness: Int, CaseIterable {
-    case original = 1, twice = 2, fiveTimes = 5
-
-    var title: String { self == .original ? "원본 (1배)" : "\(rawValue)배" }
+enum PlaybackPanel: Hashable, Identifiable {
+    case stream(StreamKind), brightness
+    var id: Self { self }
 }
 
 struct MediaStream: Identifiable, Equatable {
@@ -83,9 +82,9 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var position = 0.0
     @Published private(set) var playing = false
     @Published private(set) var volume: Double
-    var videoBrightness: VideoBrightness {
-        didSet { defaults.set(videoBrightness.rawValue, forKey: Self.brightnessKey) }
-    }
+    static let brightnessRange = 1...10
+    @Published private(set) var videoBrightness: Int
+    @Published private(set) var sourceIsHDR = false
     @Published var subtitleSize: SubtitleSize {
         didSet {
             defaults.set(subtitleSize.rawValue, forKey: Self.subtitleSizeKey)
@@ -96,7 +95,7 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var streams: [MediaStream] = []
     @Published private(set) var subtitleDelay = 0.0
     @Published private(set) var audioDelay = 0.0
-    @Published var panel: StreamKind? { didSet { reveal() } }
+    @Published var panel: PlaybackPanel? { didSet { reveal() } }
     @Published var showsRemaining = false
     @Published var showsPlaylist = false { didSet { reveal(); windowStateChanged?() } }
     @Published var dropHint: String?
@@ -150,7 +149,8 @@ final class PlayerSession: ObservableObject {
         let initialVolume = 0.68
         defaults.register(defaults: [Self.volumeKey: initialVolume, Self.beforeMuteKey: initialVolume])
         volume = defaults.double(forKey: Self.volumeKey)
-        videoBrightness = VideoBrightness(rawValue: defaults.integer(forKey: Self.brightnessKey)) ?? .original
+        let savedBrightness = defaults.integer(forKey: Self.brightnessKey)
+        videoBrightness = Self.brightnessRange.contains(savedBrightness) ? savedBrightness : 1
         subtitleSize = defaults.string(forKey: Self.subtitleSizeKey).flatMap(SubtitleSize.init(rawValue:)) ?? .normal
         do { engine = try VideoEngine.make() }
         catch { engine = nil; notice = error.localizedDescription }
@@ -198,13 +198,14 @@ final class PlayerSession: ObservableObject {
         guard let current, let player = engine else { return }
         let screen = (pipActive ? pip?.screen : nil) ?? window?.screen
         let supportsHDR = (screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1
-        let changes = player.poll(hdrDisplay: supportsHDR, brightness: videoBrightness.rawValue)
+        let changes = player.poll(hdrDisplay: supportsHDR, brightness: videoBrightness)
         if changes["brightnessUnavailable"] as? Bool == true {
-            videoBrightness = .original
+            setVideoBrightness(1)
             show("선택한 영상 밝기를 적용할 수 없어 원본 밝기로 재생합니다.")
         }
         if let error = changes["error"] as? String {
             playRequested = false; ended = false; loaded = false; videoDisplaySize = nil; setPlayingUI(false)
+            sourceIsHDR = false
             show("재생할 수 없습니다. \(current.title) (\(error))", seconds: 12)
             pip?.invalidate(); return
         }
@@ -214,6 +215,7 @@ final class PlayerSession: ObservableObject {
             attachSidecars(for: current.url, ticket: fileTicket)
             pip?.invalidate()
         }
+        if let hdr = changes["sourceHDR"] as? Bool, hdr != sourceIsHDR { sourceIsHDR = hdr }
         if let width = changes["displayWidth"] as? Int, let height = changes["displayHeight"] as? Int {
             let size = CGSize(width: width, height: height)
             if size != videoDisplaySize {
@@ -286,6 +288,11 @@ final class PlayerSession: ObservableObject {
         ended = false
         position = min(duration, max(0,value)); lastSeek = ProcessInfo.processInfo.systemUptime
         engine?.seek(position); reveal()
+    }
+    func setVideoBrightness(_ multiplier: Int) {
+        guard Self.brightnessRange.contains(multiplier), multiplier != videoBrightness else { return }
+        videoBrightness = multiplier
+        defaults.set(multiplier, forKey: Self.brightnessKey)
     }
     func setVolume(_ value: Double) {
         guard value.isFinite else { return }
@@ -376,6 +383,7 @@ final class PlayerSession: ObservableObject {
         pendingSubtitles.removeAll()
         playRequested = clip != nil
         videoDisplaySize = nil
+        sourceIsHDR = false
         smallPictureSize = nil
         loaded = false; ended = false; setPlayingUI(false); selection = clip?.id
         position = 0; lastSeek = 0; streams = []; subtitleDelay = 0; audioDelay = 0; panel = nil
