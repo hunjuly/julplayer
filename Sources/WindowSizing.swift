@@ -57,10 +57,11 @@ enum PlayerWindowLayout {
 
 struct PlaybackControlLayout: Equatable {
     enum Item: Hashable {
-        case previous, next, mute, volume, brightness, audio, subtitles, trash
+        case previous, back60, back10, play, ahead10, ahead60, next, mute, volume, brightness, audio, subtitles, trash
 
         var width: CGFloat {
             switch self {
+            case .play: return 32
             case .brightness: return 50
             case .volume: return 52
             case .trash: return PlaybackControlLayout.iconWidth + 7
@@ -73,27 +74,30 @@ struct PlaybackControlLayout: Equatable {
     static let iconWidth: CGFloat = 29
     static let spacing: CGFloat = 3
     static let sectionGap: CGFloat = 8
-    static let transportSpacing: CGFloat = 12
+    private static let minimumTimeline: CGFloat = 150
     private static let sections: [[Item]] = [
-        [.previous, .next],
         [.mute, .volume],
+        [.previous, .back60, .back10, .play, .ahead10, .ahead60, .next],
         [.brightness, .audio, .subtitles, .trash]
     ]
     private static let priorities: [[Item]] = [
-        [.brightness], [.previous, .next], [.mute], [.subtitles], [.audio], [.trash], [.volume]
+        [.back10, .ahead10], [.brightness], [.previous, .next], [.back60, .ahead60],
+        [.mute], [.subtitles], [.audio], [.trash], [.volume]
     ]
 
-    let files, sound, options: [Item]
-    let playOnly, stackedFooter, showsLongSeeks: Bool
-    let barHeight, playDiameter, shortSeekDiameter, longSeekDiameter: CGFloat
+    let sound, transport, options: [Item]
+    let playOnly, stackedFooter: Bool
+    let leadingSpan, trailingSpan: CGFloat
+    var barHeight: CGFloat { stackedFooter ? 68 : 42 }
 
-    // Each nonempty group shares a row with the timeline (or a spacer in the two-row layout).
+    private static func rowWidth(_ group: [Item]) -> CGFloat {
+        group.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(0, group.count - 1))
+    }
+
     private static func footerWidth(for items: Set<Item>, timeline: CGFloat) -> CGFloat {
-        sections.reduce(timeline) { width, section in
-            let group = section.filter(items.contains)
-            guard !group.isEmpty else { return width }
-            return width + sectionGap + group.reduce(0) { $0 + $1.width } + spacing * CGFloat(group.count - 1)
-        }
+        var widths = sections.map { rowWidth($0.filter(items.contains)) }.filter { $0 > 0 }
+        if timeline > 0 { widths.append(timeline) }
+        return widths.reduce(0, +) + sectionGap * CGFloat(max(0, widths.count - 1))
     }
 
     init(size: CGSize, sourceIsHDR: Bool) {
@@ -102,27 +106,27 @@ struct PlaybackControlLayout: Equatable {
         let items = Set(Self.sections.joined().filter { sourceIsHDR || $0 != .brightness })
         playOnly = width <= PlayerWindowLayout.minimumContent.width + 1
         stackedFooter = !playOnly && size.height >= 220 && Self.footerWidth(for: items, timeline: 250) > available
-        barHeight = playOnly ? 0 : (stackedFooter ? 66 : 42)
-        let clearDiameter = size.height - 2 * (max(40, barHeight) + 6)
-        playDiameter = min(width >= 900 ? 80 : 72, max(44, clearDiameter))
-        shortSeekDiameter = max(42, (playDiameter * 0.76).rounded())
-        longSeekDiameter = max(36, (playDiameter * 0.60).rounded())
-        let fullTransport = playDiameter + 2 * (shortSeekDiameter + longSeekDiameter) + 4 * Self.transportSpacing
-        showsLongSeeks = !playOnly && fullTransport <= available
-
-        var visible = Set<Item>()
+        var visible: Set<Item> = [.play]
         if !playOnly {
             for group in Self.priorities {
                 guard group.allSatisfy(items.contains) else { continue }
                 let candidate = visible.union(group)
-                if Self.footerWidth(for: candidate, timeline: stackedFooter ? 0 : 164) <= available {
+                if Self.footerWidth(for: candidate, timeline: stackedFooter ? 0 : Self.minimumTimeline) <= available {
                     visible = candidate
                 }
             }
         }
-        files = Self.sections[0].filter(visible.contains)
-        sound = Self.sections[1].filter(visible.contains)
+        sound = Self.sections[0].filter(visible.contains)
+        transport = Self.sections[1].filter(visible.contains)
         options = Self.sections[2].filter(visible.contains)
+        // Center play and seek, borrowing space if the timeline or the side buttons need it.
+        let sides = max(0, available - Self.rowWidth(transport))
+        let soundWidth = sound.isEmpty ? 0 : Self.rowWidth(sound) + Self.sectionGap
+        let optionsWidth = options.isEmpty ? 0 : Self.rowWidth(options) + Self.sectionGap
+        let left = stackedFooter ? soundWidth : Self.minimumTimeline + Self.sectionGap
+        let right = optionsWidth + (stackedFooter ? 0 : soundWidth)
+        leadingSpan = min(max(sides / 2, left), max(0, sides - right))
+        trailingSpan = sides - leadingSpan
     }
 }
 

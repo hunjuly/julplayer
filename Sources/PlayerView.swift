@@ -53,6 +53,19 @@ struct PlayerView: View {
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }
+            .overlay(alignment: .topLeading) {
+                if let notice = session.notice {
+                    Text(notice)
+                        .font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                        .lineLimit(3).truncationMode(.middle)
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                        .background(.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 6))
+                        .padding(12)
+                        .offset(y: session.controlsVisible ? 0 : -area.safeAreaInsets.top)
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("playback-message")
+                }
+            }
         }
         .overlay {
             if let hint = session.dropHint {
@@ -111,27 +124,10 @@ struct PlayerView: View {
                     }
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
-                .overlay {
-                    ZStack {
-                        if session.selection != nil && !session.pipActive && session.controlsVisible {
-                            TransportControls(session: session, layout: layout).transition(.opacity)
-                        }
-                    }
-                    .allowsHitTesting(session.controlsVisible)
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: session.controlsVisible)
-                }
-
-                if let notice = session.notice {
-                    VStack {
-                        Text(notice).font(.callout).padding(9)
-                            .background(.black.opacity(0.76), in: RoundedRectangle(cornerRadius: 7))
-                        Spacer()
-                    }.padding(16).allowsHitTesting(false)
-                }
 
                 if session.selection != nil {
                     ZStack(alignment: .bottom) {
-                        if session.controlsVisible && !layout.playOnly {
+                        if session.controlsVisible {
                             Controls(session: session, layout: layout)
                                 .onHover { session.overControls = $0 }
                                 .onDisappear { session.overControls = false }
@@ -139,7 +135,7 @@ struct PlayerView: View {
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    .frame(height: max(1, layout.barHeight), alignment: .bottom)
+                    .frame(height: layout.barHeight, alignment: .bottom)
                     .allowsHitTesting(session.controlsVisible)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: session.controlsVisible)
                     .backgroundPreferenceValue(HDRButtonBounds.self) { bounds in
@@ -159,9 +155,6 @@ struct PlayerView: View {
                 }
             }
             .clipped()
-            .onHover { inside in
-                if inside { session.revealForPointer() }
-            }
         }
     }
 }
@@ -216,61 +209,6 @@ private struct PanelBackground: View {
     }
 }
 
-private struct TransportControls: View {
-    @ObservedObject var session: PlayerSession
-    let layout: PlaybackControlLayout
-
-    var body: some View {
-        HStack(spacing: PlaybackControlLayout.transportSpacing) {
-            if layout.showsLongSeeks { seekButton(-60) }
-            if !layout.playOnly { seekButton(-10) }
-            let play = session.playing ? "일시 정지" : "재생"
-            TransportButton(symbol: session.playing ? "pause.fill" : "play.fill", label: play,
-                            shortcut: "Space", diameter: layout.playDiameter,
-                            symbolSize: (layout.playDiameter * 0.39).rounded(), action: session.togglePlay)
-            if !layout.playOnly { seekButton(10) }
-            if layout.showsLongSeeks { seekButton(60) }
-        }
-        .fixedSize()
-    }
-
-    private func seekButton(_ seconds: Int) -> some View {
-        let backwards = seconds < 0
-        let amount = abs(seconds)
-        let diameter = amount == 10 ? layout.shortSeekDiameter : layout.longSeekDiameter
-        return TransportButton(symbol: "\(backwards ? "gobackward" : "goforward").\(amount)",
-                               label: "\(amount)초 \(backwards ? "뒤로" : "앞으로")",
-                               shortcut: (amount == 60 ? "⌥" : "") + (backwards ? "←" : "→"),
-                               diameter: diameter, symbolSize: (diameter * 0.52).rounded()) {
-            session.seek(to: session.position + Double(seconds))
-        }
-    }
-}
-
-private struct TransportButton: View {
-    let symbol, label, shortcut: String
-    let diameter, symbolSize: CGFloat
-    let action: () -> Void
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @ViewState private var hovered = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: symbolSize, weight: .semibold))
-                .offset(x: symbol == "play.fill" ? 1.5 : 0)
-                .foregroundStyle(.white)
-                .frame(width: diameter, height: diameter)
-                .background(reduceTransparency ? Color(white: 0.13) : .black.opacity(hovered ? 0.65 : 0.48), in: Circle())
-                .overlay { Circle().strokeBorder(.white.opacity(hovered ? 0.48 : 0.23), lineWidth: 0.8) }
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovered = $0 }
-        .help("\(label) (\(shortcut))").accessibilityLabel(label)
-    }
-}
-
 private struct Controls: View {
     @ObservedObject var session: PlayerSession
     let layout: PlaybackControlLayout
@@ -283,14 +221,24 @@ private struct Controls: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if layout.stackedFooter { timeline }
-            HStack(spacing: PlaybackControlLayout.sectionGap) {
-                if !layout.files.isEmpty { row(layout.files) }
-                if !layout.sound.isEmpty { row(layout.sound) }
-                if layout.stackedFooter { Spacer(minLength: 0) } else { timeline }
-                if !layout.options.isEmpty { row(layout.options) }
+            if layout.playOnly {
+                control(.play)
+            } else {
+                if layout.stackedFooter { timeline }
+                HStack(spacing: 0) {
+                    Group {
+                        if layout.stackedFooter { row(layout.sound) }
+                        else { timeline.padding(.trailing, PlaybackControlLayout.sectionGap) }
+                    }
+                    .frame(width: layout.leadingSpan, alignment: .leading)
+                    row(layout.transport)
+                    HStack(spacing: PlaybackControlLayout.sectionGap) {
+                        if !layout.stackedFooter && !layout.sound.isEmpty { row(layout.sound) }
+                        if !layout.options.isEmpty { row(layout.options) }
+                    }
+                    .frame(width: layout.trailingSpan, alignment: .trailing)
+                }
             }
-            .frame(maxWidth: .infinity)
         }
         .shadow(color: .black.opacity(0.82), radius: 1.4, x: 0, y: 0.6)
         .padding(.horizontal, PlaybackControlLayout.inset)
@@ -343,7 +291,7 @@ private struct Controls: View {
             IconControl(volumeSymbol, label: session.volume == 0 ? "음소거 해제 (M)" : "음소거 (M)", action: session.toggleMute)
         case .volume:
             PlayerSlider(value: session.volume, tint: .white.opacity(0.86), name: "볼륨",
-                         reading: "\(Int(session.volume * 100))%", change: session.setVolume)
+                         reading: "\(session.volumePercent)%", change: session.setVolume)
         case .brightness:
             Button { session.panel = .brightness } label: {
                 HStack(spacing: 3) {
@@ -372,6 +320,21 @@ private struct Controls: View {
             }
         case .previous: fileButton(-1)
         case .next: fileButton(1)
+        case .back60: seekButton(-60)
+        case .back10: seekButton(-10)
+        case .ahead10: seekButton(10)
+        case .ahead60: seekButton(60)
+        case .play:
+            let label = session.playing ? "일시 정지" : "재생"
+            Button { session.togglePlay() } label: {
+                Image(systemName: session.playing ? "pause.fill" : "play.fill")
+                    .font(.system(size: 14, weight: .bold))
+                    .offset(x: session.playing ? 0 : 1)
+                    .foregroundStyle(Color(white: 0.10))
+                    .frame(width: item.width, height: item.width)
+                    .background(Color(white: 0.96), in: Circle())
+            }
+            .buttonStyle(.plain).accessibilityLabel(label).help("\(label) (Space)")
         }
     }
 
@@ -380,6 +343,16 @@ private struct Controls: View {
         return IconControl(direction < 0 ? "backward.end.fill" : "forward.end.fill",
                            label: direction < 0 ? "이전 파일 (⌘←)" : "다음 파일 (⌘→)", size: 14) { session.stepFile(direction) }
             .disabled(!available).opacity(available ? 1 : 0.32)
+    }
+
+    private func seekButton(_ seconds: Int) -> some View {
+        let backwards = seconds < 0
+        let number = abs(seconds)
+        let key = (number == 60 ? "⌥" : "") + (backwards ? "←" : "→")
+        return IconControl("\(backwards ? "gobackward" : "goforward").\(number)",
+                           label: "\(number)초 \(backwards ? "뒤로" : "앞으로") (\(key))", size: number == 10 ? 19 : 17) {
+            session.seek(to: session.position + Double(seconds))
+        }
     }
 }
 

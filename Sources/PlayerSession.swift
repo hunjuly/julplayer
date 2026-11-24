@@ -89,15 +89,14 @@ final class PlayerSession: ObservableObject {
         didSet {
             defaults.set(subtitleSize.rawValue, forKey: Self.subtitleSizeKey)
             _ = engine?.setNumber(subtitleSize.scale, forOption: "sub-scale")
-            reveal()
         }
     }
     @Published private(set) var streams: [MediaStream] = []
     @Published private(set) var subtitleDelay = 0.0
     @Published private(set) var audioDelay = 0.0
-    @Published var panel: PlaybackPanel? { didSet { reveal() } }
+    @Published var panel: PlaybackPanel? { didSet { windowStateChanged?() } }
     @Published var showsRemaining = false
-    @Published var showsPlaylist = false { didSet { reveal(); windowStateChanged?() } }
+    @Published var showsPlaylist = false { didSet { windowStateChanged?() } }
     @Published var dropHint: String?
     @Published private(set) var controlsVisible = true { didSet { windowStateChanged?() } }
     @Published var pinWhenPlaying = UserDefaults.standard.bool(forKey: "pinWhenPlaying") {
@@ -116,15 +115,17 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var videoDisplaySize: CGSize?
     var current: Clip? { clips.first { $0.id == selection } }
     var duration: Double { current?.duration ?? 0 }
+    var volumePercent: Int { Int((volume * 100).rounded()) }
     var overControls = false {
         didSet {
-            if oldValue && !overControls { lastInteraction = ProcessInfo.processInfo.systemUptime }
+            if oldValue && !overControls { lastPointerActivity = ProcessInfo.processInfo.systemUptime }
         }
     }
-    var scrubbing = false { didSet { reveal() } }
+    var scrubbing = false
     let engine: VideoEngine?
     private(set) var pip: PictureInPicture?
-    private var lastInteraction = ProcessInfo.processInfo.systemUptime
+    private static let controlsTimeout: TimeInterval = 2
+    private var lastPointerActivity = -TimeInterval.infinity
     private var lastSeek: TimeInterval = 0
     private var noticeEnds = TimeInterval.infinity
     private var timer: Timer?
@@ -178,17 +179,16 @@ final class PlayerSession: ObservableObject {
         pip?.shutdown()
         engine?.shutdown()
     }
-    func reveal() {
-        lastInteraction = ProcessInfo.processInfo.systemUptime
+    func pointerMoved() {
+        lastPointerActivity = ProcessInfo.processInfo.systemUptime
         if !controlsVisible { controlsVisible = true }
     }
-    func revealForPointer() {
-        guard let window, window.isVisible, !window.isMiniaturized,
-              window.frame.contains(NSEvent.mouseLocation) else { return }
-        reveal()
-    }
     func show(_ text: String, seconds: Double = 4) {
-        notice = text; noticeEnds = ProcessInfo.processInfo.systemUptime + seconds; reveal()
+        noticeEnds = ProcessInfo.processInfo.systemUptime + seconds
+        if notice != text { notice = text }
+    }
+    func showFeedback(_ text: String) {
+        if selection != nil { show(text, seconds: 1.5) }
     }
 
     private func tick() {
@@ -242,8 +242,8 @@ final class PlayerSession: ObservableObject {
             ended = eof
         }
         advanceAfterEnd()
-        if playing && controlsVisible && !overControls && !scrubbing && !showsPlaylist && panel == nil
-            && window?.attachedSheet == nil && now - lastInteraction >= 2 {
+        if controlsVisible && !overControls && !scrubbing && panel == nil
+            && window?.attachedSheet == nil && now - lastPointerActivity >= Self.controlsTimeout {
             controlsVisible = false
         }
     }
@@ -263,7 +263,6 @@ final class PlayerSession: ObservableObject {
         } else {
             if let playbackActivity { ProcessInfo.processInfo.endActivity(playbackActivity) }
             playbackActivity = nil
-            reveal()
         }
         windowStateChanged?()
         pip?.invalidate()
@@ -277,17 +276,21 @@ final class PlayerSession: ObservableObject {
             engine?.setPaused(!value)
             setPlayingUI(value)
         }
-        reveal()
     }
-    func togglePlay() {
-        if current == nil { openFiles() }
-        else { setPlaying(loaded ? !playing : !playRequested) }
+    @discardableResult
+    func togglePlay() -> Bool? {
+        guard current != nil else { openFiles(); return nil }
+        let requested = loaded ? !playing : !playRequested
+        setPlaying(requested)
+        return requested
     }
-    func seek(to value: Double) {
-        guard loaded && duration > 0 else { return }
+    @discardableResult
+    func seek(to value: Double) -> Double? {
+        guard loaded, duration > 0, value.isFinite else { return nil }
         ended = false
         position = min(duration, max(0,value)); lastSeek = ProcessInfo.processInfo.systemUptime
-        engine?.seek(position); reveal()
+        engine?.seek(position)
+        return position
     }
     func setVideoBrightness(_ multiplier: Int) {
         guard Self.brightnessRange.contains(multiplier), multiplier != videoBrightness else { return }
@@ -303,7 +306,10 @@ final class PlayerSession: ObservableObject {
             defaults.set(level, forKey: Self.volumeKey)
             _ = engine?.setNumber(level * 100, forOption: "volume")
         }
-        reveal()
+    }
+    func adjustVolume(by change: Double) {
+        setVolume(volume + change)
+        showFeedback("음량 \(volumePercent)%")
     }
     func toggleMute() {
         setVolume(volume > 0 ? 0 : defaults.double(forKey: Self.beforeMuteKey))
@@ -355,15 +361,16 @@ final class PlayerSession: ObservableObject {
         }
         defaults.set(id < 0, forKey: kind.disabledKey)
         if let rows = engine?.trackList() { applyStreamChoices(to: rows.compactMap(MediaStream.init)) }
-        reveal()
         return true
     }
     func toggleCaptions() {
         let subs = streams.filter { $0.kind == .subtitle }
-        guard !subs.isEmpty else { return }
+        guard !subs.isEmpty else { showFeedback("자막 없음"); return }
         let preferred = preferredTrack(in: subs, ordinal: ordinal(for: .subtitle, count: subs.count))
-        _ = selectStream(.subtitle, id: subs.contains(where: \.selected) ? -1 : preferred.id,
-                         in: subs, rememberTrack: false)
+        let id = subs.contains(where: \.selected) ? -1 : preferred.id
+        if selectStream(.subtitle, id: id, in: subs, rememberTrack: false) {
+            showFeedback(id < 0 ? "자막 끔" : "자막 켬 · \(preferred.title)")
+        }
     }
     func setDelay(_ kind: StreamKind, seconds: Double) {
         guard seconds.isFinite else { return }
@@ -373,7 +380,6 @@ final class PlayerSession: ObservableObject {
             return
         }
         if kind == .audio { audioDelay = value } else { subtitleDelay = value }
-        reveal()
     }
 
     func select(_ clip: Clip?) {
@@ -385,11 +391,16 @@ final class PlayerSession: ObservableObject {
         videoDisplaySize = nil
         sourceIsHDR = false
         smallPictureSize = nil
+        if clip == nil {
+            controlsVisible = true
+        } else if selection == nil {
+            controlsVisible = ProcessInfo.processInfo.systemUptime - lastPointerActivity < Self.controlsTimeout
+        }
         loaded = false; ended = false; setPlayingUI(false); selection = clip?.id
         position = 0; lastSeek = 0; streams = []; subtitleDelay = 0; audioDelay = 0; panel = nil
         overControls = false
         if engine != nil { notice = nil }
-        reveal(); selectionDidChange?(); pip?.invalidate()
+        selectionDidChange?(); pip?.invalidate()
         guard let clip else { pip?.stop(); engine?.stop(); return }
         if let engine, !engine.load(clip.url.path, paused: true) {
             playRequested = false
@@ -400,7 +411,12 @@ final class PlayerSession: ObservableObject {
         guard let i = clips.firstIndex(where: { $0.id == selection }), clips.indices.contains(i+offset) else { return nil }
         return clips[i+offset]
     }
-    func stepFile(_ offset: Int) { if let clip = adjacent(offset) { select(clip) } }
+    @discardableResult
+    func stepFile(_ offset: Int) -> Clip? {
+        guard let clip = adjacent(offset) else { return nil }
+        select(clip)
+        return clip
+    }
 
     func openMedia(_ input: [URL]) {
         let files = input.map(\.standardizedFileURL).filter(LocalMedia.isVideo)

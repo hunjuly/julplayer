@@ -121,6 +121,7 @@ final class PictureInPicture: NSObject, @preconcurrency AVPictureInPictureContro
         previouslyVisiblePanels = Set(NSApp.windows.compactMap { $0 is NSPanel && $0.isVisible ? ObjectIdentifier($0) : nil })
         phase = .starting
         session?.setPlaying(true)
+        session?.showFeedback("화면 속 화면 시작")
         controller.startPictureInPicture()
     }
 
@@ -176,7 +177,7 @@ final class PictureInPicture: NSObject, @preconcurrency AVPictureInPictureContro
         if minimizedPlayer { _ = showPlayerWindow() }
         minimizedPlayer = false
         restoreFullScreenIfNeeded()
-        session?.reveal()
+        session?.showFeedback("화면 속 화면 종료")
     }
 
     func pictureInPictureController(_ controller: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {

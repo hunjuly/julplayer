@@ -37,11 +37,16 @@ private final class PlayerWindow: NSWindow {
 @MainActor
 private final class PlayerHost: NSHostingView<PlayerView> {
     private var session: PlayerSession { rootView.session }
+    private var lastPointerLocation = NSEvent.mouseLocation
     override var acceptsFirstResponder: Bool { true }
 
     func pointerMoved(with event: NSEvent) {
-        guard event.window === window, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
-        session.revealForPointer()
+        let point = NSEvent.mouseLocation
+        defer { lastPointerLocation = point }
+        guard point != lastPointerLocation, let window, event.window === window,
+              window.isVisible, !window.isMiniaturized, window.frame.contains(point),
+              bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        session.pointerMoved()
     }
 
     func adjustVolume(for event: NSEvent) -> Bool {
@@ -56,7 +61,7 @@ private final class PlayerHost: NSHostingView<PlayerView> {
         }
         let fingerDelta = event.isDirectionInvertedFromDevice ? -event.scrollingDeltaY : event.scrollingDeltaY
         let change = event.hasPreciseScrollingDeltas ? fingerDelta / 250 : min(1, max(-1, fingerDelta)) * 0.10
-        session.setVolume(session.volume + change)
+        session.adjustVolume(by: change)
         return true
     }
 
@@ -179,7 +184,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationWillResignActive(_ notification: Notification) { setPlaybackCursorHidden(false) }
     func windowDidResignKey(_ notification: Notification) { setPlaybackCursorHidden(false) }
-    func windowDidBecomeKey(_ notification: Notification) { session.revealForPointer() }
+    func windowDidBecomeKey(_ notification: Notification) { updateWindowState() }
     func windowWillClose(_ notification: Notification) { session.setPlaying(false) }
     func windowDidDeminiaturize(_ notification: Notification) {
         if session.pipActive { session.pip?.stop() }
@@ -241,7 +246,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             guard let self, self.changingFullScreen else { return }
             self.changingFullScreen = false
             self.applyWindowSize()
-            self.session.reveal()
             self.updateWindowState()
             self.session.pip?.fullScreenTransitionFinished()
         }
@@ -282,7 +286,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             let frame = window.frameRect(forContentRect: CGRect(origin: .zero, size: size.content))
             target = centeredFrame(size: frame.size, within: screen.visibleFrame)
             session.smallPictureSize = size.smallPicture
-            session.reveal()
+            session.showFeedback(request.preset.menuTitle)
         } else {
             guard let video = session.videoDisplaySize, video.width > 0, video.height > 0 else { return }
             let current = window.frame
@@ -332,7 +336,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         pinItem?.image = NSImage(systemSymbolName: session.pinWhenPlaying ? "pin.fill" : "pin", accessibilityDescription: "재생 중 항상 위")
         pinItem?.toolTip = session.pinWhenPlaying ? "재생 중 항상 위 끄기" : "재생 중 항상 위 켜기"
         playlistItem?.toolTip = session.showsPlaylist ? "재생목록 닫기 (L)" : "재생목록 보기 (L)"
-        let hideCursor = !visible && session.playing && !session.pipActive && !changingFullScreen
+        let hideCursor = !visible && !session.pipActive && !changingFullScreen && !session.showsPlaylist && session.panel == nil
             && window.styleMask.contains(.fullScreen) && window.isKeyWindow && NSApp.isActive
             && window.attachedSheet == nil && window.frame.contains(NSEvent.mouseLocation)
         setPlaybackCursorHidden(hideCursor)
@@ -478,10 +482,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             guard let self, event.window === self.window, self.window.attachedSheet == nil, self.session.panel == nil else { return event }
             if self.window.firstResponder is NSTextView { return event }
             let modifiers = event.modifierFlags.intersection([.command,.option,.control,.shift])
-            if event.keyCode == 48 && (modifiers.isEmpty || modifiers == [.shift]) {
-                self.session.reveal()
-                return event
-            }
             if modifiers == [.command] {
                 let action: () -> Void
                 switch event.keyCode {
@@ -511,8 +511,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             case 51: if !event.isARepeat { self.deleteFile() }
             case 123: self.backward()
             case 124: self.forward()
-            case 125: self.session.setVolume(self.session.volume - 0.05)
-            case 126: self.session.setVolume(self.session.volume + 0.05)
+            case 125: self.session.adjustVolume(by: -0.05)
+            case 126: self.session.adjustVolume(by: 0.05)
             case 49: if !event.isARepeat { self.togglePlay() }
             case 46: if !event.isARepeat { self.toggleMute() }
             case 8: if !event.isARepeat { self.toggleCaptions() }
@@ -529,21 +529,41 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     @objc private func chooseWindowSize(_ sender: NSMenuItem) {
         if let preset = WindowSizePreset(rawValue: sender.tag) { requestSize(preset) }
     }
-    @objc private func togglePlay() { session.togglePlay() }
-    @objc private func backward() { session.seek(to: session.position - 10) }
-    @objc private func forward() { session.seek(to: session.position + 10) }
-    @objc private func toggleMute() { session.toggleMute() }
-    @objc private func fullScreen() { window.toggleFullScreen(nil) }
+    @objc private func togglePlay() {
+        if let playing = session.togglePlay() { session.showFeedback(playing ? "재생" : "일시 정지") }
+    }
+    private func skip(_ seconds: Int) {
+        if let position = session.seek(to: session.position + Double(seconds)) {
+            session.showFeedback("\(abs(seconds))초 \(seconds < 0 ? "뒤로" : "앞으로") · \(timecode(position))")
+        }
+    }
+    @objc private func backward() { skip(-10) }
+    @objc private func forward() { skip(10) }
+    @objc private func back60() { skip(-60) }
+    @objc private func forward60() { skip(60) }
+    @objc private func toggleMute() {
+        session.toggleMute()
+        session.showFeedback(session.volume == 0 ? "음소거" : "음소거 해제 · 음량 \(session.volumePercent)%")
+    }
+    @objc private func fullScreen() {
+        session.showFeedback(window.styleMask.contains(.fullScreen) ? "창 모드" : "전체 화면")
+        window.toggleFullScreen(nil)
+    }
     @objc private func toggleCaptions() { session.toggleCaptions() }
     @objc private func chooseSubtitleSize(_ sender: NSMenuItem) {
         if let size = sender.representedObject as? SubtitleSize { session.subtitleSize = size }
     }
     @objc private func audioPanel() { session.panel = .stream(.audio) }
     @objc private func subtitlePanel() { session.panel = .stream(.subtitle) }
-    @objc private func previousFile() { session.stepFile(-1) }
-    @objc private func nextFile() { session.stepFile(1) }
-    @objc private func back60() { session.seek(to: session.position - 60) }
-    @objc private func forward60() { session.seek(to: session.position + 60) }
+    private func stepFile(_ offset: Int) {
+        if let clip = session.stepFile(offset) {
+            session.showFeedback("\(offset < 0 ? "이전 영상" : "다음 영상") · \(clip.url.lastPathComponent)")
+        } else {
+            session.showFeedback(offset < 0 ? "첫 번째 영상" : "마지막 영상")
+        }
+    }
+    @objc private func previousFile() { stepFile(-1) }
+    @objc private func nextFile() { stepFile(1) }
     @objc private func togglePiP() { session.pip?.toggle() }
     @objc private func togglePin() { session.pinWhenPlaying.toggle() }
     @objc private func deleteFile() { session.deleteCurrent() }
@@ -582,7 +602,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         if item.action == #selector(togglePiP) { item.state = session.pipActive ? .on : .off; return session.loaded }
         return true
     }
-    @objc private func togglePlaylist() { session.showsPlaylist.toggle() }
+    @objc private func togglePlaylist() {
+        session.showsPlaylist.toggle()
+        session.showFeedback(session.showsPlaylist ? "재생목록 열림" : "재생목록 닫힘")
+    }
     @objc private func about() {
         let credits = NSAttributedString(string: "재생 엔진 · mpv / FFmpeg")
         NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "JulPlayer", .credits: credits])
