@@ -1,12 +1,14 @@
 // Run from the repository root on macOS:
 // xcrun swiftc -parse-as-library Sources/{MediaAPI,WorkInfo}.swift Tests/WorkInfoTests.swift -o /tmp/julplayer-work-tests && /tmp/julplayer-work-tests
+// Pass a writable SMB directory as the first argument to test Finder visibility on that share.
 import Foundation
 
 @main
 enum WorkInfoTests {
     static func main() throws {
         let files = FileManager.default
-        let root = files.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let base = CommandLine.arguments.dropFirst().first.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? files.temporaryDirectory
+        let root = base.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try files.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? files.removeItem(at: root) }
 
@@ -40,14 +42,31 @@ enum WorkInfoTests {
         let created = try SidecarFile.create(original, at: url)
         let overwritten = try SidecarFile.create("duplicate", at: url)
         precondition(created && !overwritten)
+        let subtitle = root.appendingPathComponent("Example.ja.srt")
+        let addedSubtitle = try SidecarFile.create("1\n00:00:00,000 --> 00:00:01,000\nExample\n", at: subtitle)
+        precondition(addedSubtitle)
+        func visibleFiles() throws -> Set<String> {
+            let entries = try files.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+            return Set(entries.map(\.lastPathComponent))
+        }
+        let afterCreation = try visibleFiles()
+        precondition(afterCreation.contains(url.lastPathComponent) && afterCreation.contains(subtitle.lastPathComponent))
         let notes = "\n직접 추가한 메모\n"
         try (original + notes).write(to: url, atomically: true, encoding: .utf8)
+        var legacyFile = url
+        var attributes = URLResourceValues()
+        attributes.isHidden = true
+        try legacyFile.setResourceValues(attributes)
+        let whileHidden = try visibleFiles()
+        precondition(!whileHidden.contains(url.lastPathComponent))
         let translated = try SidecarFile.update(url) { text in
             try SavedIntroduction.adding("한국어 소개.", to: text, expected: "Original synopsis.")
         }
         let saved = try SidecarFile.read(url)
         precondition(saved == translated && translated.contains("## 원문 소개\n\nOriginal synopsis.") && translated.hasSuffix(notes))
         precondition(SavedIntroduction(translated) == nil)
+        let afterUpdate = try visibleFiles()
+        precondition(afterUpdate.contains(url.lastPathComponent))
         print("Work information regression tests passed.")
     }
 }

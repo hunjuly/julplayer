@@ -79,19 +79,31 @@ enum SidecarFile {
     // Both the temporary file and the final name live on the same volume, including SMB shares.
     static func create(_ text: String, at url: URL) throws -> Bool {
         let fm = FileManager.default
-        let temporary = url.deletingLastPathComponent().appendingPathComponent(".julplayer-" + UUID().uuidString)
+        // SMB can keep the hidden flag of a dot-prefixed file even after it is renamed.
+        let temporary = url.deletingLastPathComponent().appendingPathComponent("JulPlayer-\(UUID().uuidString).tmp")
         try Data(text.utf8).write(to: temporary, options: .withoutOverwriting)
         defer { try? fm.removeItem(at: temporary) }
-        if renamex_np(temporary.path, url.path, UInt32(RENAME_EXCL)) == 0 { return true }
-        let code = errno
-        if code == EEXIST { return false }
-        if code == ENOTSUP || code == EINVAL {
-            do {
-                try fm.moveItem(at: temporary, to: url)
-                return true
-            } catch let error as CocoaError where error.code == .fileWriteFileExists { return false }
+        if renamex_np(temporary.path, url.path, UInt32(RENAME_EXCL)) != 0 {
+            let code = errno
+            if code == EEXIST { return false }
+            guard code == ENOTSUP || code == EINVAL else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSFilePathErrorKey: url.path])
+            }
+            do { try fm.moveItem(at: temporary, to: url) }
+            catch let error as CocoaError where error.code == .fileWriteFileExists { return false }
         }
-        throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSFilePathErrorKey: url.path])
+        makeVisible(url)
+        return true
+    }
+
+    private static func makeVisible(_ url: URL) {
+        var file = url
+        file.removeCachedResourceValue(forKey: .isHiddenKey)
+        guard (try? file.resourceValues(forKeys: [.isHiddenKey]).isHidden) == true else { return }
+        var values = URLResourceValues()
+        values.isHidden = false
+        // The content has been saved even on volumes that do not allow changes to file flags.
+        try? file.setResourceValues(values)
     }
 
     static func update(_ url: URL, edit: (String) throws -> String) throws -> String {
@@ -103,6 +115,7 @@ enum SidecarFile {
                 let current = try String(contentsOf: target, encoding: .utf8)
                 let updated = try edit(current)
                 try updated.write(to: target, atomically: true, encoding: .utf8)
+                makeVisible(target)
                 return updated
             }
         }
