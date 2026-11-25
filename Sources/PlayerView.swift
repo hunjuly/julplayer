@@ -209,6 +209,12 @@ private struct PanelBackground: View {
     }
 }
 
+private extension View {
+    func footerShadow() -> some View {
+        shadow(color: .black.opacity(0.82), radius: 1.4, x: 0, y: 0.6)
+    }
+}
+
 private struct Controls: View {
     @ObservedObject var session: PlayerSession
     let layout: PlaybackControlLayout
@@ -227,7 +233,7 @@ private struct Controls: View {
                 if layout.stackedFooter { timeline }
                 HStack(spacing: 0) {
                     Group {
-                        if layout.stackedFooter { row(layout.sound) }
+                        if layout.stackedFooter { row(layout.sound).footerShadow() }
                         else { timeline.padding(.trailing, PlaybackControlLayout.sectionGap) }
                     }
                     .frame(width: layout.leadingSpan, alignment: .leading)
@@ -236,11 +242,11 @@ private struct Controls: View {
                         if !layout.stackedFooter && !layout.sound.isEmpty { row(layout.sound) }
                         if !layout.options.isEmpty { row(layout.options) }
                     }
+                    .footerShadow()
                     .frame(width: layout.trailingSpan, alignment: .trailing)
                 }
             }
         }
-        .shadow(color: .black.opacity(0.82), radius: 1.4, x: 0, y: 0.6)
         .padding(.horizontal, PlaybackControlLayout.inset)
         .frame(maxWidth: .infinity)
         .frame(height: layout.barHeight)
@@ -273,6 +279,7 @@ private struct Controls: View {
         }
         .font(.system(size: 11, weight: .medium, design: .monospaced))
         .foregroundStyle(.white.opacity(0.96))
+        .footerShadow()
     }
 
     private func row(_ items: [PlaybackControlLayout.Item]) -> some View {
@@ -328,13 +335,12 @@ private struct Controls: View {
             let label = session.playing ? "일시 정지" : "재생"
             Button { session.togglePlay() } label: {
                 Image(systemName: session.playing ? "pause.fill" : "play.fill")
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 23, weight: .bold))
                     .offset(x: session.playing ? 0 : 1)
-                    .foregroundStyle(Color(white: 0.10))
-                    .frame(width: item.width, height: item.width)
-                    .background(Color(white: 0.96), in: Circle())
+                    .foregroundStyle(.white)
+                    .frame(width: item.width, height: 34)
             }
-            .buttonStyle(.plain).accessibilityLabel(label).help("\(label) (Space)")
+            .buttonStyle(HUDButtonStyle()).accessibilityLabel(label).help("\(label) (Space)")
         }
     }
 
@@ -343,16 +349,32 @@ private struct Controls: View {
         return IconControl(direction < 0 ? "backward.end.fill" : "forward.end.fill",
                            label: direction < 0 ? "이전 파일 (⌘←)" : "다음 파일 (⌘→)", size: 14) { session.stepFile(direction) }
             .disabled(!available).opacity(available ? 1 : 0.32)
+            .footerShadow()
     }
 
     private func seekButton(_ seconds: Int) -> some View {
         let backwards = seconds < 0
         let number = abs(seconds)
         let key = (number == 60 ? "⌥" : "") + (backwards ? "←" : "→")
-        return IconControl("\(backwards ? "gobackward" : "goforward").\(number)",
-                           label: "\(number)초 \(backwards ? "뒤로" : "앞으로") (\(key))", size: number == 10 ? 19 : 17) {
+        let label = "\(number)초 \(backwards ? "뒤로" : "앞으로") (\(key))"
+        let arrow = Image(systemName: backwards ? "chevron.left" : "chevron.right")
+            .font(.system(size: 11, weight: .bold))
+        return Button {
             session.seek(to: session.position + Double(seconds))
+        } label: {
+            HStack(spacing: 2) {
+                if backwards { arrow }
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text(verbatim: String(number)).font(.system(size: 15, weight: .semibold)).monospacedDigit()
+                    Text("초").font(.system(size: 11, weight: .medium))
+                }
+                if !backwards { arrow }
+            }
+            .fixedSize()
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, minHeight: 32)
         }
+        .buttonStyle(HUDButtonStyle()).help(label).accessibilityLabel(label)
     }
 }
 

@@ -61,7 +61,8 @@ struct PlaybackControlLayout: Equatable {
 
         var width: CGFloat {
             switch self {
-            case .play: return 32
+            case .play: return 36
+            case .back60, .back10, .ahead10, .ahead60: return 42
             case .brightness: return 50
             case .volume: return 52
             case .trash: return PlaybackControlLayout.iconWidth + 7
@@ -74,7 +75,6 @@ struct PlaybackControlLayout: Equatable {
     static let iconWidth: CGFloat = 29
     static let spacing: CGFloat = 3
     static let sectionGap: CGFloat = 8
-    private static let minimumTimeline: CGFloat = 150
     private static let sections: [[Item]] = [
         [.mute, .volume],
         [.previous, .back60, .back10, .play, .ahead10, .ahead60, .next],
@@ -104,14 +104,17 @@ struct PlaybackControlLayout: Equatable {
         let width = size.width
         let available = max(0, width - 2 * Self.inset)
         let items = Set(Self.sections.joined().filter { sourceIsHDR || $0 != .brightness })
+        // Reserve the two short seeks beside play even in a short, narrow window.
+        let shortSeeks = Self.rowWidth([.back10, .play, .ahead10])
+        let minimumTimeline = min(150, max(0, available - shortSeeks - Self.sectionGap))
         playOnly = width <= PlayerWindowLayout.minimumContent.width + 1
-        stackedFooter = !playOnly && size.height >= 220 && Self.footerWidth(for: items, timeline: 250) > available
+        stackedFooter = !playOnly && size.height >= 220 && Self.footerWidth(for: items, timeline: 200) > available
         var visible: Set<Item> = [.play]
         if !playOnly {
             for group in Self.priorities {
                 guard group.allSatisfy(items.contains) else { continue }
                 let candidate = visible.union(group)
-                if Self.footerWidth(for: candidate, timeline: stackedFooter ? 0 : Self.minimumTimeline) <= available {
+                if Self.footerWidth(for: candidate, timeline: stackedFooter ? 0 : minimumTimeline) <= available {
                     visible = candidate
                 }
             }
@@ -123,7 +126,7 @@ struct PlaybackControlLayout: Equatable {
         let sides = max(0, available - Self.rowWidth(transport))
         let soundWidth = sound.isEmpty ? 0 : Self.rowWidth(sound) + Self.sectionGap
         let optionsWidth = options.isEmpty ? 0 : Self.rowWidth(options) + Self.sectionGap
-        let left = stackedFooter ? soundWidth : Self.minimumTimeline + Self.sectionGap
+        let left = stackedFooter ? soundWidth : minimumTimeline + Self.sectionGap
         let right = optionsWidth + (stackedFooter ? 0 : soundWidth)
         leadingSpan = min(max(sides / 2, left), max(0, sides - right))
         trailingSpan = sides - leadingSpan
