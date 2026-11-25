@@ -50,9 +50,15 @@ struct MediaStream: Identifiable, Equatable {
     let title: String
     var selected: Bool
     let externalURL: URL?
+    let codec: String
+    let languageCode: String?
+    let ffIndex: Int?
     init?(_ entry: [String: Any]) {
         guard let key = entry["type"] as? String, let kind = StreamKind(rawValue: key), let id = entry["id"] as? Int else { return nil }
         self.kind = kind; self.id = id
+        codec = (entry["codec"] as? String ?? "").lowercased()
+        languageCode = entry["lang"] as? String
+        ffIndex = (entry["ff-index"] as? Int).flatMap { $0 >= 0 ? $0 : nil }
         selected = entry["selected"] as? Bool == true
         let locale = Locale(identifier: "ko")
         let language = (entry["lang"] as? String).flatMap { locale.localizedString(forLanguageCode: $0) ?? $0 }
@@ -108,6 +114,7 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var deletionInProgress = false
     @Published var smallPictureSize: CGSize?
 
+    var openCaptionGenerator: (() -> Void)?
     var selectionDidChange: (() -> Void)?
     var videoSizeDidChange: (() -> Void)?
     var windowStateChanged: (() -> Void)?
@@ -538,7 +545,7 @@ final class PlayerSession: ObservableObject {
         }
     }
 
-    private func confirmDeletion(_ entries: [LocalMedia.DeletionEntry], movie: URL, in window: NSWindow) async -> Bool {
+    private func confirmDeletion(_ entries: [LocalMedia.FileIdentity], movie: URL, in window: NSWindow) async -> Bool {
         let count = entries.count - 1
         let alert = NSAlert()
         alert.alertStyle = .warning

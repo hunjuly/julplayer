@@ -17,7 +17,7 @@ xcrun swiftc -O -parse-as-library -target "$(uname -m)-apple-macos13.0" -import-
    -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' -framework OpenGL -framework IOSurface -o "$contents/MacOS/JulPlayer"
 cp Resources/Info.plist "$contents/Info.plist"
 rm -f "$contents/Resources/Lake.mkv" "$contents/Resources/lake.jpg"
-cp Resources/*.icns Resources/ThirdParty.txt Resources/LibraryCredits.rtf "$contents/Resources/"
+cp Resources/*.icns Resources/ThirdParty.txt Resources/FFmpeg-LICENSE.txt Resources/LibraryCredits.rtf "$contents/Resources/"
 # The libmpv OpenGL renderer loads fixed shaders and has no tunable shader parameters.
 for transfer in pq srgb; do
     for gain in {2..10}; do
@@ -25,4 +25,5 @@ for transfer in pq srgb; do
             > "$contents/Resources/Brightness-$transfer-$gain.glsl"
     done
 done
+./scripts/copy-caption-tool.sh "$contents"
 codesign --force --sign - "$bundle"

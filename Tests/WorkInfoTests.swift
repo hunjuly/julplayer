@@ -1,0 +1,53 @@
+// Run from the repository root on macOS:
+// xcrun swiftc -parse-as-library Sources/{MediaAPI,WorkInfo}.swift Tests/WorkInfoTests.swift -o /tmp/julplayer-work-tests && /tmp/julplayer-work-tests
+import Foundation
+
+@main
+enum WorkInfoTests {
+    static func main() throws {
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try files.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: root) }
+
+        let decomposed = "카우보이 비밥/시즌 2".decomposedStringWithCanonicalMapping
+        let season = root.appendingPathComponent(decomposed, isDirectory: true)
+        try files.createDirectory(at: season, withIntermediateDirectories: true)
+        let episodes = ["01.mkv", "02.mkv"].map { season.appendingPathComponent($0) }
+        for episode in episodes { try Data().write(to: episode) }
+        // Finder and enumerators may express the same path with distinct Unicode and mount prefixes.
+        let siblings = try files.contentsOfDirectory(at: season, includingPropertiesForKeys: nil)
+        for (index, episode) in episodes.enumerated() {
+            let work = WorkIdentity(movie: episode.standardizedFileURL, siblings: siblings)
+            precondition(work.search == "카우보이 비밥 Season 2" && work.episode == index + 1)
+            precondition(work.document.lastPathComponent == "작품정보.md")
+        }
+
+        let releases = ["Example.S01E01.mkv", "Example.S02E01.mkv"].map { root.appendingPathComponent($0) }
+        let first = WorkIdentity(movie: releases[0], siblings: releases)
+        let second = WorkIdentity(movie: releases[1], siblings: releases)
+        precondition(first.document.lastPathComponent == "작품정보 S01.md")
+        precondition(second.document.lastPathComponent == "작품정보 S02.md")
+        let film = root.appendingPathComponent("Another Movie (1998) [1080p].mkv")
+        let mixed = releases + [film]
+        precondition(WorkIdentity(movie: releases[0], siblings: mixed).document.lastPathComponent == "Example.S01E01.md")
+        let standalone = WorkIdentity(movie: film, siblings: mixed)
+        precondition(standalone.title == "Another Movie" && standalone.year == 1998)
+        precondition(standalone.document.lastPathComponent == "Another Movie (1998) [1080p].md")
+
+        let original = "# Example\n\n## 줄거리와 분위기\n\nOriginal synopsis.\n\n## 출처\n\n- AniList\n"
+        let url = first.document
+        let created = try SidecarFile.create(original, at: url)
+        let overwritten = try SidecarFile.create("duplicate", at: url)
+        precondition(created && !overwritten)
+        let notes = "\n직접 추가한 메모\n"
+        try (original + notes).write(to: url, atomically: true, encoding: .utf8)
+        let translated = try SidecarFile.update(url) { text in
+            try SavedIntroduction.adding("한국어 소개.", to: text, expected: "Original synopsis.")
+        }
+        let saved = try SidecarFile.read(url)
+        precondition(saved == translated && translated.contains("## 원문 소개\n\nOriginal synopsis.") && translated.hasSuffix(notes))
+        precondition(SavedIntroduction(translated) == nil)
+        print("Work information regression tests passed.")
+    }
+}

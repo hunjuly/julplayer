@@ -59,7 +59,7 @@ enum LocalMedia {
         let separators = CharacterSet(charactersIn: " ._-[]()")
         guard let first = rest.unicodeScalars.first, separators.contains(first) else { return false }
         let parts = rest.components(separatedBy: separators).filter { !$0.isEmpty }
-        return !parts.isEmpty && parts.allSatisfy { tags.contains($0) }
+        return !parts.isEmpty && parts.allSatisfy { tags.contains($0) || $0 == "und" || $0.range(of: #"^ai[0-9]*$"#, options: .regularExpression) != nil }
     }
 
     static func sidecars(for movie: URL, deleting: Bool = false) -> [URL] {
@@ -78,10 +78,10 @@ enum LocalMedia {
         }.sorted {
             let left = subtitleRank($0), right = subtitleRank($1)
             return left == right ? $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending : left < right
-        }
+        }.map(\.standardizedFileURL)
     }
 
-    struct DeletionEntry {
+    struct FileIdentity {
         let url: URL
         private let volume: dev_t
         private let inode: ino_t
@@ -94,26 +94,26 @@ enum LocalMedia {
             }
             let type = info.st_mode & S_IFMT
             guard type == S_IFREG || type == S_IFLNK else {
-                throw LocalMedia.deletionError("일반 파일만 삭제할 수 있습니다. " + url.lastPathComponent)
+                throw LocalMedia.deletionError("일반 파일이나 심볼릭 링크에서만 수행할 수 있습니다. " + url.lastPathComponent)
             }
             volume = info.st_dev
             inode = info.st_ino
         }
 
-        fileprivate func checkIdentity() throws {
+        func checkIdentity() throws {
             let current = try Self(url)
             guard volume == current.volume, inode == current.inode else {
                 throw LocalMedia.deletionError("확인한 뒤 파일이 변경되었습니다. " + url.lastPathComponent)
             }
         }
     }
-    static func deletionEntries(movie: URL, attached: [URL], shared: Set<URL>) throws -> [DeletionEntry] {
+    static func deletionEntries(movie: URL, attached: [URL], shared: Set<URL>) throws -> [FileIdentity] {
         let matching = sidecars(for: movie, deleting: true)
         let autoLoaded = Set(sidecars(for: movie).map(\.standardizedFileURL))
         let explicit = attached.filter { !autoLoaded.contains($0.standardizedFileURL) && isSubtitle($0) && FileManager.default.fileExists(atPath: $0.path) }
         var seen = Set<URL>()
         let subtitles = (matching + explicit).filter { !shared.contains($0.standardizedFileURL) }
-        return try ([movie] + subtitles).map(\.standardizedFileURL).filter { seen.insert($0).inserted }.map(DeletionEntry.init)
+        return try ([movie] + subtitles).map(\.standardizedFileURL).filter { seen.insert($0).inserted }.map(FileIdentity.init)
     }
 
     private static func deletionError(_ message: String) -> NSError {
@@ -125,7 +125,7 @@ enum LocalMedia {
         return deletionError("\(url.lastPathComponent) — \(message)")
     }
 
-    static func delete(_ entries: [DeletionEntry]) throws {
+    static func delete(_ entries: [FileIdentity]) throws {
         for entry in entries { try entry.checkIdentity() }
         // Keep the movie in the playlist and on disk if a subtitle cannot be removed.
         var removed = [String]()

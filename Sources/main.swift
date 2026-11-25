@@ -92,6 +92,7 @@ private final class PlayerHost: NSHostingView<PlayerView> {
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSWindowDelegate, NSMenuItemValidation {
     let session = PlayerSession()
+    private lazy var mediaTools = MediaToolsController(session: session)
     private var window: PlayerWindow!
     private let filename = NSTextField(labelWithString: "")
     private var events: Any?
@@ -157,6 +158,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
                 window.setFrame(centeredFrame(size: size, within: screen), display: true)
             }
         }
+        session.openCaptionGenerator = { [weak self] in self?.mediaTools.showCaptions() }
         session.selectionDidChange = { [weak self] in
             guard let self else { return }
             self.needsVideoHeight = false
@@ -164,6 +166,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
                 self.requestedSize = nil
             }
             self.updateTitle()
+            self.mediaTools.selectionChanged()
         }
         session.videoSizeDidChange = { [weak self] in
             self?.needsVideoHeight = true
@@ -185,7 +188,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     func applicationWillResignActive(_ notification: Notification) { setPlaybackCursorHidden(false) }
     func windowDidResignKey(_ notification: Notification) { setPlaybackCursorHidden(false) }
     func windowDidBecomeKey(_ notification: Notification) { updateWindowState() }
-    func windowWillClose(_ notification: Notification) { session.setPlaying(false) }
+    func windowWillClose(_ notification: Notification) { session.setPlaying(false); mediaTools.shutdown() }
     func windowDidDeminiaturize(_ notification: Notification) {
         if session.pipActive { session.pip?.stop() }
         applyWindowSize()
@@ -311,6 +314,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        mediaTools.shutdown()
         setPlaybackCursorHidden(false)
         rememberWindowSize()
         if let events { NSEvent.removeMonitor(events) }
@@ -331,7 +335,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             window.standardWindowButton(button)?.isHidden = !visible
         }
         let floating = session.pinWhenPlaying && session.playing && !session.pipActive && !window.styleMask.contains(.fullScreen)
-        window.level = floating ? .floating : .normal
+        let level: NSWindow.Level = floating ? .floating : .normal
+        if window.level != level {
+            window.level = level
+            mediaTools.setWindowLevel(level)
+        }
         pipItem?.image = NSImage(systemSymbolName: session.pipActive ? "pip.exit" : "pip.enter", accessibilityDescription: "화면 속 화면")
         pinItem?.image = NSImage(systemSymbolName: session.pinWhenPlaying ? "pin.fill" : "pin", accessibilityDescription: "재생 중 항상 위")
         pinItem?.toolTip = session.pinWhenPlaying ? "재생 중 항상 위 끄기" : "재생 중 항상 위 켜기"
@@ -411,11 +419,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         }
         let app = menu("JulPlayer")
         add(app, "JulPlayer 정보", #selector(about), target: self)
+        add(app, "OpenAI 설정…", #selector(aiSettings), key: ",", target: self)
         app.addItem(.separator())
         add(app, "JulPlayer 가리기", #selector(NSApplication.hide(_:)), key: "h", target: NSApp)
         add(app, "JulPlayer 종료", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp)
         let file = menu("파일")
         add(file, "동영상 열기…", #selector(openFiles), key: "o", target: self)
+        add(file, "작품 정보", #selector(workInfo), key: "i", target: self)
         add(file, "현재 영상과 자막 삭제…", #selector(deleteFile), key: "\u{8}", modifiers: [], target: self)
         add(file, "현재 영상과 자막 바로 삭제", #selector(deleteFileImmediately), key: "\u{8}", target: self)
         let associationItem = NSMenuItem(title: "기본 플레이어로 연결", action: nil, keyEquivalent: "")
@@ -430,6 +440,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         associationItem.submenu = formats; file.addItem(associationItem)
         file.addItem(.separator())
         add(file, "창 닫기", #selector(NSWindow.performClose(_:)), key: "w")
+        let edit = menu("편집")
+        add(edit, "잘라내기", #selector(NSText.cut(_:)), key: "x")
+        add(edit, "복사", #selector(NSText.copy(_:)), key: "c")
+        add(edit, "붙여넣기", #selector(NSText.paste(_:)), key: "v")
+        add(edit, "전체 선택", #selector(NSText.selectAll(_:)), key: "a")
         let play = menu("재생")
         add(play, "재생 / 일시 정지", #selector(togglePlay), key: " ", modifiers: [], target: self)
         add(play, "이전 파일", #selector(previousFile), key: "\u{F702}", target: self)
@@ -451,6 +466,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         add(play, "자막 켜기 / 끄기", #selector(toggleCaptions), key: "c", modifiers: [], target: self)
         add(play, "오디오 스트림 및 싱크…", #selector(audioPanel), target: self)
         add(play, "자막 스트림 및 싱크…", #selector(subtitlePanel), target: self)
+        add(play, "AI 자막 생성…", #selector(generateCaptions), target: self)
         let sizeItem = play.addItem(withTitle: "자막 크기", action: nil, keyEquivalent: "")
         let sizes = NSMenu(title: sizeItem.title)
         for size in SubtitleSize.allCases {
@@ -525,6 +541,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         }
     }
 
+    @objc private func aiSettings() { mediaTools.showSettings() }
+    @objc private func workInfo() { mediaTools.showInfo() }
+    @objc private func generateCaptions() { mediaTools.showCaptions() }
     @objc private func openFiles() { session.openFiles() }
     @objc private func chooseWindowSize(_ sender: NSMenuItem) {
         if let preset = WindowSizePreset(rawValue: sender.tag) { requestSize(preset) }
@@ -578,6 +597,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         }
     }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.keyEquivalentModifierMask.isEmpty && !item.keyEquivalent.isEmpty && NSApp.keyWindow !== window { return false }
+        if item.action == #selector(workInfo) { return session.current != nil }
+        if item.action == #selector(generateCaptions) { return session.loaded || mediaTools.captions.running }
         if item.action == #selector(associate(_:)) { return !associatingFiles }
         if let size = item.representedObject as? SubtitleSize {
             item.state = size == session.subtitleSize ? .on : .off

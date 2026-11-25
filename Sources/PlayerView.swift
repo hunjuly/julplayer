@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 // Use SwiftUI's property wrapper when building with the standalone Command Line Tools.
-private typealias ViewState<Value> = SwiftUI.State<Value>
+typealias ViewState<Value> = SwiftUI.State<Value>
 private let amber = Color(red: 1, green: 0.68, blue: 0.45)
 
 private struct HDRButtonBounds: PreferenceKey {
@@ -516,7 +516,10 @@ private struct StreamPanel: View {
                 }
             }.frame(height: min(174, CGFloat(rows.count + 1) * 30))
             if kind == .subtitle {
-                Button("외부 자막 열기…", action: session.chooseSubtitles).buttonStyle(.link)
+                HStack(spacing: 14) {
+                    Button("외부 자막 열기…", action: session.chooseSubtitles)
+                    Button("AI 자막 생성…") { session.openCaptionGenerator?() }
+                }.buttonStyle(.link)
                 Picker("자막 크기", selection: $session.subtitleSize) {
                     ForEach(SubtitleSize.allCases, id: \.self) { size in
                         Text(size.title).tag(size)

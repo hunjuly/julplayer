@@ -5,3 +5,8 @@ Build recipes and dependency sources: https://github.com/iina/deps
 mpv source and licenses: https://github.com/mpv-player/mpv
 FFmpeg source and licenses: https://ffmpeg.org/
 Sample photograph: Luca Bravo, https://unsplash.com/photos/zAjdgNXsMeg
+
+AI subtitle extraction uses the FFmpeg executable from imageio-ffmpeg 0.8.1.
+Distribution and build sources: https://github.com/imageio/imageio-ffmpeg/tree/v0.8.1
+FFmpeg 9.0 sources: https://github.com/FFmpeg/FFmpeg/tree/n9.0
+The executable is distributed under GPL version 2 or later. See FFmpeg-LICENSE.txt.
