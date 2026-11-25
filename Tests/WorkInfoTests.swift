@@ -5,7 +5,31 @@ import Foundation
 
 @main
 enum WorkInfoTests {
+    static func checkRatings() throws {
+        let score = "AniList 69/100 · 2,987명 평가"
+        let legacy = "# Example\n\n- **장르**  드라마\n- **AniList 평점**  69/100 · 2,987명 평가\n\n## 메모\n\n- **평점**  내 메모"
+        let old = WorkInfoDocument(legacy)
+        precondition(old.title == "Example" && old.rating == score && old.bodyLines.contains("- **장르**  드라마"))
+        precondition(old.bodyLines.contains("- **평점**  내 메모") && !old.bodyLines.contains { $0.contains("69/100") })
+        let web = WorkInfoDocument("# Example\r\n\r\n- **평점**  IMDb 8.2/10\r\n\r\n## 출처")
+        precondition(web.rating == "IMDb 8.2/10")
+        let note = "내 메모\n- **평점**  9/10"
+        let plain = WorkInfoDocument(note)
+        precondition(plain.title == nil && plain.bodyLines.joined(separator: "\n") == note)
+
+        for rating in [score, nil] {
+            let work = WorkRecord(id: "test", title: "Example", aliases: [], year: nil, format: "", rating: rating,
+                                  fields: [("장르", "드라마")], synopsis: "Original synopsis.", sources: [])
+            let text = work.markdown(summary: work.synopsis)
+            let header = "# Example\n\n**평점**  \(rating ?? WorkInfoDocument.noRating)\n\n"
+            precondition(text.hasPrefix(header) && WorkInfoDocument(text).rating == rating)
+            let korean = try SavedIntroduction.adding("한국어 소개.", to: text, expected: work.synopsis)
+            precondition(korean.hasPrefix(header) && WorkInfoDocument(korean).rating == rating)
+        }
+    }
+
     static func main() throws {
+        try checkRatings()
         let files = FileManager.default
         let base = CommandLine.arguments.dropFirst().first.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? files.temporaryDirectory
         let root = base.appendingPathComponent(UUID().uuidString, isDirectory: true)

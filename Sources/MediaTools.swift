@@ -280,25 +280,48 @@ struct SavedFileRow: View {
     }
 }
 
+private func workInfoText(_ line: String) -> Text {
+    Text((try? AttributedString(markdown: line, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(line))
+}
+
+private struct WorkRatingLabel: View {
+    let rating: String?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: rating == nil ? "star" : "star.fill")
+                .foregroundStyle(rating == nil ? Color.secondary : Color.yellow).accessibilityHidden(true)
+            if let rating {
+                Text("평점").foregroundStyle(.secondary)
+                workInfoText(rating).fontWeight(.semibold)
+            } else {
+                Text("평점 \(WorkInfoDocument.noRating)").foregroundStyle(.secondary)
+            }
+        }.accessibilityElement(children: .combine)
+    }
+}
+
 private struct WorkInfoView: View {
     @ObservedObject var model: WorkInfoModel
     let settings: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if model.savedURL != nil || !model.document.isEmpty {
+                let document = WorkInfoDocument(model.document)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 7) {
-                        ForEach(Array(model.document.components(separatedBy: .newlines).enumerated()), id: \.offset) { _, line in
+                        if let title = document.title {
+                            Text(verbatim: title).font(.title2.bold())
+                            WorkRatingLabel(rating: document.rating).font(.headline).padding(.bottom, 4)
+                        }
+                        ForEach(Array(document.bodyLines.enumerated()), id: \.offset) { _, line in
                             if line.hasPrefix("# ") {
                                 Text(String(line.dropFirst(2))).font(.title2.bold())
                             } else if line.hasPrefix("## ") {
                                 Text(String(line.dropFirst(3))).font(.headline).padding(.top, 7)
                             } else if !line.isEmpty {
                                 let raw = line.hasPrefix("- ") ? String(line.dropFirst(2)) : line
-                                Text(
-                                    (try? AttributedString(
-                                        markdown: raw, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-                                        ?? AttributedString(raw))
+                                workInfoText(raw)
                             }
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
@@ -346,6 +369,7 @@ private struct WorkInfoView: View {
                                 } label: {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(record.title).fontWeight(.semibold)
+                                        if let rating = record.rating { WorkRatingLabel(rating: rating).font(.caption) }
                                         if !record.detail.isEmpty { Text(record.detail).font(.caption).foregroundStyle(.secondary) }
                                     }.multilineTextAlignment(.leading)
                                         .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3)
