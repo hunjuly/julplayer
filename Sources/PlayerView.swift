@@ -30,17 +30,17 @@ struct PlayerView: View {
             HStack(spacing: 0) {
                 video
                     .ignoresSafeArea(.container, edges: .top)
-                    .accessibilityHidden(session.showsPlaylist && !inline)
-                if session.showsPlaylist && inline {
+                    .accessibilityHidden(session.sidebar != nil && !inline)
+                if let sidebar = session.sidebar, inline {
                     Divider().frame(width: 1)
-                    Playlist(session: session).frame(width: PlayerWindowLayout.playlistWidth)
+                    sidebarView(sidebar)
                 }
             }
             .overlay {
-                if session.showsPlaylist && !inline {
+                if let sidebar = session.sidebar, !inline {
                     ZStack(alignment: .trailing) {
-                        Color.black.opacity(0.45).onTapGesture { session.showsPlaylist = false }
-                        Playlist(session: session).frame(width: PlayerWindowLayout.playlistWidth)
+                        Color.black.opacity(0.45).onTapGesture { session.sidebar = nil }
+                        sidebarView(sidebar)
                     }
                 }
             }
@@ -82,6 +82,17 @@ struct PlayerView: View {
         }
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
+    }
+
+    private func sidebarView(_ sidebar: PlayerSidebar) -> some View {
+        Group {
+            switch sidebar {
+            case .playlist: Playlist(session: session)
+            case .captions: CaptionSidebar(session: session, queue: session.captionQueue)
+            }
+        }
+        .frame(width: PlayerWindowLayout.sidebarWidth)
+        .background(Color(red: 0.09, green: 0.095, blue: 0.105))
     }
 
     private var video: some View {
@@ -530,7 +541,7 @@ private struct StreamPanel: View {
                     Button(action: session.chooseSubtitles) {
                         Text("외부 자막 열기").frame(maxWidth: .infinity)
                     }
-                    Button { session.openCaptionGenerator?() } label: {
+                    Button(action: session.showCaptionQueue) {
                         Text("AI 자막 생성").frame(maxWidth: .infinity)
                     }
                 }
@@ -605,7 +616,6 @@ private struct Playlist: View {
             .onChange(of: session.selection) { id in if let id { reader.scrollTo(id, anchor: .center) } }
         }
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(Color(red: 0.09, green: 0.095, blue: 0.105))
         .accessibilityLabel("재생목록")
     }
 }

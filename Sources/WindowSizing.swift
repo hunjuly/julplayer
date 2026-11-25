@@ -24,18 +24,18 @@ enum WindowSizePreset: Int, CaseIterable {
 
 enum PlayerWindowLayout {
     static let minimumContent = CGSize(width: 280, height: 158)
-    static let playlistWidth: CGFloat = 236
-    static let playlistSpan = playlistWidth + 1
+    static let sidebarWidth: CGFloat = 236
+    static let sidebarSpan = sidebarWidth + 1
 
     static func fitsSidebar(in width: CGFloat) -> Bool {
-        width >= minimumContent.width + playlistSpan
+        width >= minimumContent.width + sidebarSpan
     }
 
     static func dimensions(for preset: WindowSizePreset, videoPixels: CGSize?, backingScale: CGFloat,
-                           available: CGSize, showsPlaylist: Bool) -> (content: CGSize, smallPicture: CGSize?)? {
+                           available: CGSize, showsSidebar: Bool) -> (content: CGSize, smallPicture: CGSize?)? {
         guard let scale = preset.scale else { return (minimumContent, nil) }
         guard let videoPixels, videoPixels.width > 0, videoPixels.height > 0, backingScale > 0 else { return nil }
-        let sidebar = showsPlaylist && fitsSidebar(in: available.width) ? playlistSpan : 0
+        let sidebar = showsSidebar && fitsSidebar(in: available.width) ? sidebarSpan : 0
         let pointsPerPixel = min(scale / backingScale,
                                  (available.width - sidebar) / videoPixels.width,
                                  available.height / videoPixels.height)
@@ -150,7 +150,7 @@ struct VideoWindowDrag {
         else { edge = .corner }
     }
 
-    func contentSize(proposed: CGSize, available: CGSize, showsPlaylist: Bool) -> CGSize {
+    func contentSize(proposed: CGSize, available: CGSize, showsSidebar: Bool) -> CGSize {
         let widthDriven: Bool
         switch edge {
         case .side: widthDriven = true
@@ -164,9 +164,9 @@ struct VideoWindowDrag {
         let targetWidth = widthDriven ? proposed.width : proposed.height * aspect
         // When both sidebar layouts fit the requested height, keep the one the drag started with.
         let layoutWidth = widthDriven ? targetWidth : max(initialContent.width, targetWidth)
-        let inline = showsPlaylist && PlayerWindowLayout.fitsSidebar(in: available.width)
+        let inline = showsSidebar && PlayerWindowLayout.fitsSidebar(in: available.width)
             && PlayerWindowLayout.fitsSidebar(in: max(minimumPictureWidth, layoutWidth))
-        let sidebar = inline ? PlayerWindowLayout.playlistSpan : 0
+        let sidebar = inline ? PlayerWindowLayout.sidebarSpan : 0
         let maximumPictureWidth = min(available.width - sidebar, available.height * aspect)
         let desiredPictureWidth = widthDriven ? proposed.width - sidebar : targetWidth
         let pictureWidth = min(maximumPictureWidth, max(minimumPictureWidth, desiredPictureWidth))

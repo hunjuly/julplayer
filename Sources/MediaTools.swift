@@ -201,79 +201,10 @@ final class WorkInfoModel: ObservableObject {
 }
 
 @MainActor
-final class CaptionJob: ObservableObject {
-    @Published private(set) var running = false
-    @Published private(set) var message = ""
-    @Published private(set) var fraction: Double?
-    @Published private(set) var output: URL?
-    @Published private(set) var movie: URL?
-    @Published private(set) var error = ""
-    @Published private var inputLanguages: [URL: [String: CaptionInputLanguage]] = [:]
-    private var task: Task<Void, Never>?
-    private let generator: SubtitleGenerator
-    private let credential: () throws -> String?
-    init(
-        generator: SubtitleGenerator = SubtitleGenerator(api: MediaAPI(), executable: SubtitleGenerator.bundledTool),
-        credential: @escaping () throws -> String? = OpenAIKey.read
-    ) {
-        self.generator = generator
-        self.credential = credential
-    }
-
-    func inputLanguage(for movie: URL, track: String) -> CaptionInputLanguage {
-        inputLanguages[movie.deletingLastPathComponent()]?[track] ?? .automatic
-    }
-
-    func setInputLanguage(_ language: CaptionInputLanguage, for movie: URL, track: String) {
-        let folder = movie.deletingLastPathComponent()
-        inputLanguages[folder, default: [:]][track] = language == .automatic ? nil : language
-    }
-
-    func start(movie: URL, source: CaptionSource, korean: Bool, completed: @escaping @MainActor (URL, URL) -> Void) {
-        guard !running else { return }
-        self.movie = movie
-        output = nil
-        error = ""
-        fraction = nil
-        message = "자막 준비 중"
-        running = true
-        let language = inputLanguage(for: movie, track: source.id)
-        task = Task {
-            defer {
-                running = false
-                task = nil
-            }
-            do {
-                let url = try await generator.generate(
-                    movie: movie, source: source, korean: korean, inputLanguage: language, credential: credential
-                ) {
-                    [weak self] status, value in
-                    await self?.progress(status, value: value)
-                }
-                output = url
-                message = "자막을 저장했습니다."
-                fraction = nil
-                completed(movie, url)
-            } catch {
-                message = Task.isCancelled ? "자막 생성을 취소했습니다." : ""
-                if !Task.isCancelled { self.error = error.localizedDescription }
-                fraction = nil
-            }
-        }
-    }
-    private func progress(_ status: String, value: Double?) {
-        message = status
-        fraction = value
-    }
-    func cancel() { task?.cancel() }
-}
-
-@MainActor
 final class MediaToolsController: NSObject, NSWindowDelegate {
     private let session: PlayerSession
     let info = WorkInfoModel()
-    let captions = CaptionJob()
-    private var infoWindow: NSWindow?, captionWindow: NSWindow?, settingsWindow: NSWindow?
+    private var infoWindow: NSWindow?, settingsWindow: NSWindow?
     init(session: PlayerSession) { self.session = session }
 
     private func makeWindow<Content: View>(_ title: String, size: NSSize, minimum: NSSize, content: Content) -> NSWindow {
@@ -304,16 +235,6 @@ final class MediaToolsController: NSObject, NSWindowDelegate {
         infoWindow?.makeKeyAndOrderFront(nil)
     }
 
-    func showCaptions() {
-        session.panel = nil
-        if captionWindow == nil {
-            captionWindow = makeWindow(
-                "AI 자막 생성", size: NSSize(width: 470, height: 310), minimum: NSSize(width: 370, height: 285),
-                content: CaptionToolView(session: session, job: captions, settings: { [weak self] in self?.showSettings() }))
-        }
-        captionWindow?.makeKeyAndOrderFront(nil)
-    }
-
     func showSettings() {
         if settingsWindow == nil {
             settingsWindow = makeWindow(
@@ -323,7 +244,7 @@ final class MediaToolsController: NSObject, NSWindowDelegate {
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
     func setWindowLevel(_ level: NSWindow.Level) {
-        for window in [infoWindow, captionWindow, settingsWindow] { window?.level = level }
+        for window in [infoWindow, settingsWindow] { window?.level = level }
     }
 
     func selectionChanged() { if infoWindow?.isVisible == true { info.open(movie: session.current?.url) } }
@@ -334,27 +255,27 @@ final class MediaToolsController: NSObject, NSWindowDelegate {
             infoWindow = nil
         }
         if window === settingsWindow { settingsWindow = nil }
-        if window === captionWindow { captionWindow = nil }
     }
     func shutdown() {
-        captions.cancel()
         info.cancel()
         infoWindow?.close()
-        captionWindow?.close()
         settingsWindow?.close()
     }
 }
 
-private struct SavedFileRow: View {
+struct SavedFileRow: View {
     let url: URL
+    var label: String?
 
     var body: some View {
         HStack(spacing: 8) {
+            if let label { Text(label).font(.caption.weight(.semibold)).fixedSize() }
             Text(url.lastPathComponent)
                 .lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
                 .help(url.lastPathComponent)
             Button("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                 .fixedSize()
+                .accessibilityHint([label, url.lastPathComponent].compactMap { $0 }.joined(separator: " "))
         }
     }
 }
@@ -442,90 +363,6 @@ private struct WorkInfoView: View {
             }
             if !model.error.isEmpty { Text(model.error).foregroundStyle(.orange).textSelection(.enabled) }
         }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-}
-
-private struct CaptionToolView: View {
-    @ObservedObject var session: PlayerSession
-    @ObservedObject var job: CaptionJob
-    let settings: () -> Void
-    @ViewState private var selected = ""
-    @ViewState private var korean = true
-    private var choices: [CaptionSource] {
-        session.current.map { CaptionSource.choices(movie: $0.url, streams: session.streams) } ?? []
-    }
-    private var inputLanguage: Binding<CaptionInputLanguage> {
-        guard let movie = session.current?.url, !selected.isEmpty else { return .constant(.automatic) }
-        let track = selected
-        return Binding(
-            get: { job.inputLanguage(for: movie, track: track) },
-            set: { job.setInputLanguage($0, for: movie, track: track) })
-    }
-    private var fileName: String { (job.running ? job.movie : session.current?.url)?.lastPathComponent ?? "영상을 먼저 열어 주세요." }
-    private func reset() {
-        let items = choices
-        selected =
-            (items.first { $0.kind == .subtitle && $0.selected } ?? items.first { $0.kind == .subtitle }
-            ?? items.first { $0.selected } ?? items.first)?.id ?? ""
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(fileName).font(.headline).lineLimit(1).truncationMode(.middle)
-            if !job.running {
-                Picker("원본 트랙", selection: $selected) {
-                    if choices.isEmpty { Text("트랙 없음").tag("") }
-                    ForEach(choices) { Text($0.title).tag($0.id) }
-                }
-                Picker("원본 언어", selection: inputLanguage) {
-                    ForEach(CaptionInputLanguage.allCases, id: \.self) { language in
-                        Text(language.title).tag(language)
-                    }
-                }.disabled(!choices.contains { $0.id == selected })
-                Picker("저장할 자막", selection: $korean) {
-                    Text("한국어").tag(true)
-                    Text("원어").tag(false)
-                }.pickerStyle(.segmented)
-            }
-            if !job.running, let source = choices.first(where: { $0.id == selected }) {
-                if source.kind == .audio {
-                    Text("선택한 음성의 대사 구간을 OpenAI로 보냅니다.").font(.caption).foregroundStyle(.secondary)
-                } else if korean && inputLanguage.wrappedValue != .korean {
-                    Text("번역이 필요하면 선택한 자막의 대사를 OpenAI로 보냅니다.").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if job.running {
-                if let progress = job.fraction { ProgressView(value: progress) } else { ProgressView().controlSize(.small) }
-            }
-            if job.running || job.movie == session.current?.url {
-                if !job.message.isEmpty { Text(job.message).font(.callout) }
-                if !job.error.isEmpty { Text(job.error).foregroundStyle(.orange).textSelection(.enabled) }
-                if let output = job.output {
-                    SavedFileRow(url: output)
-                }
-            }
-            Spacer(minLength: 0)
-            HStack {
-                Button("OpenAI 설정", action: settings)
-                Spacer()
-                if job.running {
-                    Button("생성 취소", action: job.cancel)
-                } else {
-                    Button("자막 생성") {
-                        guard let movie = session.current?.url, let source = choices.first(where: { $0.id == selected }) else {
-                            return
-                        }
-                        job.start(movie: movie, source: source, korean: korean) { movie, result in
-                            if session.current?.url == movie {
-                                session.openMedia([result])
-                                session.showFeedback("AI 자막 준비됨")
-                            }
-                        }
-                    }.keyboardShortcut(.defaultAction).disabled(!session.loaded || !choices.contains { $0.id == selected })
-                }
-            }
-        }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .onAppear { reset() }.onChange(of: session.selection) { _ in reset() }
-            .onChange(of: choices) { items in if !items.contains(where: { $0.id == selected }) { reset() } }
     }
 }
 

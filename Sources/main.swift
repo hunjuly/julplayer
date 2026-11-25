@@ -55,9 +55,9 @@ private final class PlayerHost: NSHostingView<PlayerView> {
               event.momentumPhase.isEmpty, abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX) else { return false }
         let point = convert(event.locationInWindow, from: nil)
         guard bounds.contains(point) else { return false }
-        if session.showsPlaylist {
+        if session.sidebar != nil {
             guard PlayerWindowLayout.fitsSidebar(in: bounds.width),
-                  point.x < bounds.maxX - PlayerWindowLayout.playlistSpan else { return false }
+                  point.x < bounds.maxX - PlayerWindowLayout.sidebarSpan else { return false }
         }
         let fingerDelta = event.isDirectionInvertedFromDevice ? -event.scrollingDeltaY : event.scrollingDeltaY
         let change = event.hasPreciseScrollingDeltas ? fingerDelta / 200 : min(1, max(-1, fingerDelta)) * 0.125
@@ -158,7 +158,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
                 window.setFrame(centeredFrame(size: size, within: screen), display: true)
             }
         }
-        session.openCaptionGenerator = { [weak self] in self?.mediaTools.showCaptions() }
+        session.openAISettings = { [weak self] in self?.mediaTools.showSettings() }
         session.openWorkInfo = { [weak self] in self?.workInfo() }
         session.selectionDidChange = { [weak self] in
             guard let self else { return }
@@ -202,7 +202,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             videoDrag = VideoWindowDrag(video: session.videoDisplaySize,
                                         content: window.contentRect(forFrameRect: window.frame).size,
                                         frame: window.frame, pointer: window.mouseDownLocation ?? NSEvent.mouseLocation)
-            if let video = session.videoDisplaySize, !session.showsPlaylist { window.contentAspectRatio = video }
+            if let video = session.videoDisplaySize, session.sidebar == nil { window.contentAspectRatio = video }
         }
     }
     func windowWillResize(_ sender: NSWindow, to proposedFrame: NSSize) -> NSSize {
@@ -210,7 +210,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
               let screen = sender.screen ?? NSScreen.main else { return proposedFrame }
         let proposed = sender.contentRect(forFrameRect: NSRect(origin: .zero, size: proposedFrame)).size
         let available = sender.contentRect(forFrameRect: screen.visibleFrame).size
-        let size = videoDrag.contentSize(proposed: proposed, available: available, showsPlaylist: session.showsPlaylist)
+        let size = videoDrag.contentSize(proposed: proposed, available: available, showsSidebar: session.sidebar != nil)
         return sender.frameRect(forContentRect: NSRect(origin: .zero, size: size)).size
     }
     func windowDidEndLiveResize(_ notification: Notification) {
@@ -286,7 +286,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         if let request = requestedSize {
             guard let size = PlayerWindowLayout.dimensions(for: request.preset, videoPixels: session.videoDisplaySize,
                                                           backingScale: window.backingScaleFactor, available: available,
-                                                          showsPlaylist: session.showsPlaylist) else { return }
+                                                          showsSidebar: session.sidebar != nil) else { return }
             let frame = window.frameRect(forContentRect: CGRect(origin: .zero, size: size.content))
             target = centeredFrame(size: frame.size, within: screen.visibleFrame)
             session.smallPictureSize = size.smallPicture
@@ -295,7 +295,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             guard let video = session.videoDisplaySize, video.width > 0, video.height > 0 else { return }
             let current = window.frame
             var content = window.contentRect(forFrameRect: current)
-            let sidebar = session.showsPlaylist && PlayerWindowLayout.fitsSidebar(in: content.width) ? PlayerWindowLayout.playlistSpan : 0
+            let sidebar = session.sidebar != nil && PlayerWindowLayout.fitsSidebar(in: content.width) ? PlayerWindowLayout.sidebarSpan : 0
             let height = ((content.width - sidebar) * video.height / video.width).rounded()
             content.size.height = min(available.height, max(PlayerWindowLayout.minimumContent.height, height))
             let frameHeight = window.frameRect(forContentRect: content).height
@@ -344,8 +344,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         pipItem?.image = NSImage(systemSymbolName: session.pipActive ? "pip.exit" : "pip.enter", accessibilityDescription: "화면 속 화면")
         pinItem?.image = NSImage(systemSymbolName: session.pinWhenPlaying ? "pin.fill" : "pin", accessibilityDescription: "재생 중 항상 위")
         pinItem?.toolTip = session.pinWhenPlaying ? "재생 중 항상 위 끄기" : "재생 중 항상 위 켜기"
-        playlistItem?.toolTip = session.showsPlaylist ? "재생목록 닫기 (L)" : "재생목록 보기 (L)"
-        let hideCursor = !visible && !session.pipActive && !changingFullScreen && !session.showsPlaylist && session.panel == nil
+        playlistItem?.toolTip = session.sidebar == .playlist ? "재생목록 닫기 (L)" : "재생목록 보기 (L)"
+        let hideCursor = !visible && !session.pipActive && !changingFullScreen && session.sidebar == nil && session.panel == nil
             && window.styleMask.contains(.fullScreen) && window.isKeyWindow && NSApp.isActive
             && window.attachedSheet == nil && window.frame.contains(NSEvent.mouseLocation)
         setPlaybackCursorHidden(hideCursor)
@@ -525,6 +525,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
                 return nil
             }
             switch event.keyCode {
+            case 53 where self.session.sidebar != nil: self.session.sidebar = nil
             case 51: if !event.isARepeat { self.deleteFile() }
             case 123: self.backward()
             case 124: self.forward()
@@ -544,7 +545,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
 
     @objc private func aiSettings() { mediaTools.showSettings() }
     @objc private func workInfo() { mediaTools.showInfo() }
-    @objc private func generateCaptions() { mediaTools.showCaptions() }
+    @objc private func generateCaptions() {
+        session.showCaptionQueue()
+        if !session.pipActive { window.makeKeyAndOrderFront(nil) }
+    }
     @objc private func openFiles() { session.openFiles() }
     @objc private func chooseWindowSize(_ sender: NSMenuItem) {
         if let preset = WindowSizePreset(rawValue: sender.tag) { requestSize(preset) }
@@ -600,7 +604,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.keyEquivalentModifierMask.isEmpty && !item.keyEquivalent.isEmpty && NSApp.keyWindow !== window { return false }
         if item.action == #selector(workInfo) { return session.current != nil }
-        if item.action == #selector(generateCaptions) { return session.loaded || mediaTools.captions.running }
+        if item.action == #selector(generateCaptions) { return session.loaded || !session.captionQueue.items.isEmpty }
         if item.action == #selector(associate(_:)) { return !associatingFiles }
         if let size = item.representedObject as? SubtitleSize {
             item.state = size == session.subtitleSize ? .on : .off
@@ -626,8 +630,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         return true
     }
     @objc private func togglePlaylist() {
-        session.showsPlaylist.toggle()
-        session.showFeedback(session.showsPlaylist ? "재생목록 열림" : "재생목록 닫힘")
+        session.sidebar = session.sidebar == .playlist ? nil : .playlist
+        session.showFeedback(session.sidebar == .playlist ? "재생목록 열림" : "재생목록 닫힘")
     }
     @objc private func about() {
         let credits = NSAttributedString(string: "재생 엔진 · mpv / FFmpeg")

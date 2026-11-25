@@ -44,6 +44,8 @@ enum PlaybackPanel: Hashable, Identifiable {
     var id: Self { self }
 }
 
+enum PlayerSidebar { case playlist, captions }
+
 struct MediaStream: Identifiable, Equatable {
     let id: Int
     let kind: StreamKind
@@ -102,7 +104,7 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var audioDelay = 0.0
     @Published var panel: PlaybackPanel? { didSet { windowStateChanged?() } }
     @Published var showsRemaining = false
-    @Published var showsPlaylist = false { didSet { windowStateChanged?() } }
+    @Published var sidebar: PlayerSidebar? { didSet { windowStateChanged?() } }
     @Published var dropHint: String?
     @Published private(set) var controlsVisible = true { didSet { windowStateChanged?() } }
     @Published var pinWhenPlaying = UserDefaults.standard.bool(forKey: "pinWhenPlaying") {
@@ -114,7 +116,13 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var deletionInProgress = false
     @Published var smallPictureSize: CGSize?
 
-    var openCaptionGenerator: (() -> Void)?
+    lazy var captionQueue = CaptionQueue { [weak self] movie, output, original in
+        guard let self, current?.url == movie else { return }
+        addSubtitles([output])
+        if let original { addSubtitles([original], select: false) }
+        showFeedback("AI 자막 준비됨")
+    }
+    var openAISettings: (() -> Void)?
     var openWorkInfo: (() -> Void)?
     var selectionDidChange: (() -> Void)?
     var videoSizeDidChange: (() -> Void)?
@@ -143,7 +151,7 @@ final class PlayerSession: ObservableObject {
     private var playRequested = false
     private var ended = false
     private var manualSubs: [URL: [URL]] = [:]
-    private var pendingSubtitles = [URL]()
+    private var pendingSubtitles = [(url: URL, select: Bool)]()
     private var explicitSubtitleID: Int?
     private var fileTicket = 0
     private static let volumeKey = "playbackVolume"
@@ -179,6 +187,7 @@ final class PlayerSession: ObservableObject {
         if !urls.isEmpty { openMedia(urls) }
     }
     func finish() {
+        captionQueue.stop()
         timer?.invalidate(); timer = nil
         folderScan?.cancel()
         fileTicket += 1; folderScan = nil; playRequested = false
@@ -433,7 +442,7 @@ final class PlayerSession: ObservableObject {
         folderScan?.cancel()
         let clip = Clip(file: first)
         clips = [clip]; select(clip)
-        pendingSubtitles = subtitles
+        pendingSubtitles = subtitles.map { ($0, true) }
         folderScan = Task {
             let found = await Task.detached(priority: .userInitiated) { LocalMedia.folderPlaylist(for: files) }.value
             guard !Task.isCancelled else { return }
@@ -461,9 +470,14 @@ final class PlayerSession: ObservableObject {
         picker.title = "외부 자막 열기"; picker.allowsMultipleSelection = true; picker.allowedContentTypes = LocalMedia.subtitleTypes
         picker.beginSheetModal(for: window) { [weak self] answer in if answer == .OK { self?.addSubtitles(picker.urls) } }
     }
-    private func addSubtitles(_ urls: [URL]) {
+    func showCaptionQueue() {
+        panel = nil
+        sidebar = .captions
+    }
+
+    private func addSubtitles(_ urls: [URL], select: Bool = true) {
         guard let movie = current?.url, !urls.isEmpty, let engine else { return }
-        guard loaded && sidecarsReady else { pendingSubtitles += urls; return }
+        guard loaded && sidecarsReady else { pendingSubtitles += urls.map { ($0, select) }; return }
         for url in urls where LocalMedia.isSubtitle(url) {
             let file = url.standardizedFileURL
             let matchesFile: (MediaStream) -> Bool = { $0.externalURL?.path == file.path }
@@ -479,7 +493,11 @@ final class PlayerSession: ObservableObject {
                 show("자막 트랙을 찾을 수 없습니다. " + file.lastPathComponent)
                 continue
             }
-            guard selectStream(.subtitle, id: track.id, in: choices) else { continue }
+            if select {
+                guard selectStream(.subtitle, id: track.id, in: choices) else { continue }
+            } else if let rows = engine.trackList() {
+                applyStreamChoices(to: rows.compactMap(MediaStream.init))
+            }
             if !manualSubs[movie, default: []].contains(where: { $0.path == file.path }) {
                 manualSubs[movie, default: []].append(file)
             }
@@ -500,7 +518,7 @@ final class PlayerSession: ObservableObject {
             if let rows = engine.trackList() { applyStreamChoices(to: rows.compactMap(MediaStream.init)) }
             let requested = pendingSubtitles
             pendingSubtitles.removeAll()
-            addSubtitles(requested)
+            for request in requested { addSubtitles([request.url], select: request.select) }
         }
     }
 
