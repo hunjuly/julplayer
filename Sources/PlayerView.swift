@@ -357,22 +357,14 @@ private struct Controls: View {
         let number = abs(seconds)
         let key = (number == 60 ? "⌥" : "") + (backwards ? "←" : "→")
         let label = "\(number)초 \(backwards ? "뒤로" : "앞으로") (\(key))"
-        let arrow = Image(systemName: backwards ? "chevron.left" : "chevron.right")
-            .font(.system(size: 11, weight: .bold))
+        let chevron = backwards ? "chevron.left" : "chevron.right"
         return Button {
             session.seek(to: session.position + Double(seconds))
         } label: {
-            HStack(spacing: 2) {
-                if backwards { arrow }
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    Text(verbatim: String(number)).font(.system(size: 15, weight: .semibold)).monospacedDigit()
-                    Text("초").font(.system(size: 11, weight: .medium))
-                }
-                if !backwards { arrow }
-            }
-            .fixedSize()
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, minHeight: 32)
+            Image(systemName: number == 60 ? chevron + ".2" : chevron)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 32)
         }
         .buttonStyle(HUDButtonStyle()).help(label).accessibilityLabel(label)
     }
