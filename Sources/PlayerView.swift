@@ -327,15 +327,15 @@ private struct Controls: View {
             }
         case .previous: fileButton(-1)
         case .next: fileButton(1)
-        case .back60: seekButton(-60)
-        case .back10: seekButton(-10)
-        case .ahead10: seekButton(10)
-        case .ahead60: seekButton(60)
+        case .back60: seekButton(-60, symbol: "arrow.left")
+        case .back10: seekButton(-10, symbol: "gobackward")
+        case .ahead10: seekButton(10, symbol: "goforward")
+        case .ahead60: seekButton(60, symbol: "arrow.right")
         case .play:
             let label = session.playing ? "일시 정지" : "재생"
             Button { session.togglePlay() } label: {
                 Image(systemName: session.playing ? "pause.fill" : "play.fill")
-                    .font(.system(size: 23, weight: .bold))
+                    .font(.system(size: 17, weight: .medium))
                     .offset(x: session.playing ? 0 : 1)
                     .foregroundStyle(.white)
                     .frame(width: item.width, height: 34)
@@ -352,17 +352,16 @@ private struct Controls: View {
             .footerShadow()
     }
 
-    private func seekButton(_ seconds: Int) -> some View {
+    private func seekButton(_ seconds: Int, symbol: String) -> some View {
         let backwards = seconds < 0
         let number = abs(seconds)
         let key = (number == 60 ? "⌥" : "") + (backwards ? "←" : "→")
         let label = "\(number)초 \(backwards ? "뒤로" : "앞으로") (\(key))"
-        let chevron = backwards ? "chevron.left" : "chevron.right"
         return Button {
             session.seek(to: session.position + Double(seconds))
         } label: {
-            Image(systemName: number == 60 ? chevron + ".2" : chevron)
-                .font(.system(size: 18, weight: .semibold))
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, minHeight: 32)
         }
