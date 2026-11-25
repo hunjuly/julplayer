@@ -426,7 +426,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         add(app, "JulPlayer 종료", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp)
         let file = menu("파일")
         add(file, "동영상 열기", #selector(openFiles), key: "o", target: self)
-        add(file, "작품 정보", #selector(workInfo), key: "i", target: self)
+        add(file, "작품 정보", #selector(workInfo), key: "i", modifiers: [], target: self)
         add(file, "현재 영상과 자막 삭제", #selector(deleteFile), key: "\u{8}", modifiers: [], target: self)
         add(file, "현재 영상과 자막 바로 삭제", #selector(deleteFileImmediately), key: "\u{8}", target: self)
         let associationItem = NSMenuItem(title: "기본 플레이어로 연결", action: nil, keyEquivalent: "")
@@ -535,6 +535,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             case 46: if !event.isARepeat { self.toggleMute() }
             case 8: if !event.isARepeat { self.toggleCaptions() }
             case 3, 36, 76: if !event.isARepeat { self.fullScreen() }
+            case 34 where self.session.current != nil: if !event.isARepeat { self.workInfo() }
             case 35: if !event.isARepeat { self.togglePiP() }
             case 37: if !event.isARepeat { self.togglePlaylist() }
             default: return event
@@ -603,7 +604,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.keyEquivalentModifierMask.isEmpty && !item.keyEquivalent.isEmpty && NSApp.keyWindow !== window { return false }
-        if item.action == #selector(workInfo) { return session.current != nil }
         if item.action == #selector(generateCaptions) { return session.loaded || !session.captionQueue.items.isEmpty }
         if item.action == #selector(associate(_:)) { return !associatingFiles }
         if let size = item.representedObject as? SubtitleSize {
@@ -616,10 +616,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         }
         if item.action == #selector(audioPanel) || item.action == #selector(subtitlePanel) { return session.loaded }
         if [#selector(togglePlaylist), #selector(previousFile), #selector(nextFile), #selector(deleteFile), #selector(deleteFileImmediately),
-            #selector(back60), #selector(forward60)].contains(item.action) {
+            #selector(back60), #selector(forward60), #selector(workInfo)].contains(item.action) {
             guard window?.isKeyWindow == true, window.attachedSheet == nil, session.panel == nil,
                   !(window.firstResponder is NSTextView) else { return false }
             if item.action == #selector(togglePlaylist) { return true }
+            if item.action == #selector(workInfo) { return session.current != nil }
             if item.action == #selector(back60) || item.action == #selector(forward60) { return session.loaded }
             if item.action == #selector(previousFile) { return session.adjacent(-1) != nil }
             if item.action == #selector(nextFile) { return session.adjacent(1) != nil }

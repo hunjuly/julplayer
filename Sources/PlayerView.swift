@@ -330,7 +330,7 @@ private struct Controls: View {
             let on = session.streams.contains { $0.kind == .subtitle && $0.selected }
             IconControl(on ? "captions.bubble.fill" : "captions.bubble", label: "자막 스트림 및 싱크") { session.panel = .stream(.subtitle) }
         case .workInfo:
-            IconControl("info.circle", label: "작품 정보 (⌘I)") { session.openWorkInfo?() }
+            IconControl("info.circle", label: "작품 정보 (I)") { session.openWorkInfo?() }
         case .trash:
             HStack(spacing: 0) {
                 Divider().frame(height: 15)
