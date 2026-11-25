@@ -176,15 +176,17 @@ struct MediaAPI {
         return Answer(text: result, sources: sources)
     }
 
-    func transcribe(_ wav: Data, key: String, language: String?) async throws -> String {
+    struct Transcript: Decodable {
+        struct Language: Decodable { let code: String }
+        let text: String
+        let languages: [Language]?
+    }
+
+    func transcribe(_ wav: Data, key: String) async throws -> Transcript {
         let boundary = "JulPlayer-" + UUID().uuidString
         var data = Data()
         func append(_ text: String) { data.append(contentsOf: text.utf8) }
-        func field(_ name: String, _ value: String) {
-            append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n")
-        }
-        field("model", "gpt-transcribe")
-        if let language { field("languages[]", language) }
+        append("--\(boundary)\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngpt-transcribe\r\n")
         append(
             "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
         )
@@ -196,8 +198,7 @@ struct MediaAPI {
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=" + boundary, forHTTPHeaderField: "Content-Type")
         let result = try await send(request)
-        struct Transcript: Decodable { let text: String }
-        return try JSONDecoder().decode(Transcript.self, from: result).text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try JSONDecoder().decode(Transcript.self, from: result)
     }
 
     static func json<T: Encodable>(_ value: T) throws -> String {

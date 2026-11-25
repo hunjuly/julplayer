@@ -226,12 +226,6 @@ final class CaptionJob: ObservableObject {
         error = ""
         fraction = nil
         message = "자막 준비 중"
-        let key: String?
-        do { key = (source.kind == .audio || (korean && source.language != "ko")) ? try credential() : nil } catch {
-            message = ""
-            self.error = error.localizedDescription
-            return
-        }
         running = true
         task = Task {
             defer {
@@ -239,7 +233,7 @@ final class CaptionJob: ObservableObject {
                 task = nil
             }
             do {
-                let url = try await generator.generate(movie: movie, source: source, korean: korean, key: key) {
+                let url = try await generator.generate(movie: movie, source: source, korean: korean, credential: credential) {
                     [weak self] status, value in
                     await self?.progress(status, value: value)
                 }
@@ -456,9 +450,9 @@ private struct CaptionToolView: View {
             }
             if !job.running, let source = choices.first(where: { $0.id == selected }) {
                 if source.kind == .audio {
-                    Text("선택한 음성의 대사 구간을 OpenAI로 보냅니다.").font(.caption).foregroundStyle(.secondary)
-                } else if korean && source.language != "ko" {
-                    Text("선택한 자막의 대사만 OpenAI로 보내 번역합니다.").font(.caption).foregroundStyle(.secondary)
+                    Text("선택한 음성을 OpenAI로 보내 실제 대사의 언어를 자동 감지합니다.").font(.caption).foregroundStyle(.secondary)
+                } else if korean {
+                    Text("자막 본문의 언어를 확인하고, 번역이 필요하면 대사를 OpenAI로 보냅니다.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             if job.running {
