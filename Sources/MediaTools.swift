@@ -208,6 +208,7 @@ final class CaptionJob: ObservableObject {
     @Published private(set) var output: URL?
     @Published private(set) var movie: URL?
     @Published private(set) var error = ""
+    @Published private var inputLanguages: [URL: [String: CaptionInputLanguage]] = [:]
     private var task: Task<Void, Never>?
     private let generator: SubtitleGenerator
     private let credential: () throws -> String?
@@ -219,6 +220,15 @@ final class CaptionJob: ObservableObject {
         self.credential = credential
     }
 
+    func inputLanguage(for movie: URL, track: String) -> CaptionInputLanguage {
+        inputLanguages[movie.deletingLastPathComponent()]?[track] ?? .automatic
+    }
+
+    func setInputLanguage(_ language: CaptionInputLanguage, for movie: URL, track: String) {
+        let folder = movie.deletingLastPathComponent()
+        inputLanguages[folder, default: [:]][track] = language == .automatic ? nil : language
+    }
+
     func start(movie: URL, source: CaptionSource, korean: Bool, completed: @escaping @MainActor (URL, URL) -> Void) {
         guard !running else { return }
         self.movie = movie
@@ -227,13 +237,16 @@ final class CaptionJob: ObservableObject {
         fraction = nil
         message = "자막 준비 중"
         running = true
+        let language = inputLanguage(for: movie, track: source.id)
         task = Task {
             defer {
                 running = false
                 task = nil
             }
             do {
-                let url = try await generator.generate(movie: movie, source: source, korean: korean, credential: credential) {
+                let url = try await generator.generate(
+                    movie: movie, source: source, korean: korean, inputLanguage: language, credential: credential
+                ) {
                     [weak self] status, value in
                     await self?.progress(status, value: value)
                 }
@@ -295,7 +308,7 @@ final class MediaToolsController: NSObject, NSWindowDelegate {
         session.panel = nil
         if captionWindow == nil {
             captionWindow = makeWindow(
-                "AI 자막 생성", size: NSSize(width: 470, height: 285), minimum: NSSize(width: 370, height: 265),
+                "AI 자막 생성", size: NSSize(width: 470, height: 310), minimum: NSSize(width: 370, height: 285),
                 content: CaptionToolView(session: session, job: captions, settings: { [weak self] in self?.showSettings() }))
         }
         captionWindow?.makeKeyAndOrderFront(nil)
@@ -428,6 +441,13 @@ private struct CaptionToolView: View {
     private var choices: [CaptionSource] {
         session.current.map { CaptionSource.choices(movie: $0.url, streams: session.streams) } ?? []
     }
+    private var inputLanguage: Binding<CaptionInputLanguage> {
+        guard let movie = session.current?.url, !selected.isEmpty else { return .constant(.automatic) }
+        let track = selected
+        return Binding(
+            get: { job.inputLanguage(for: movie, track: track) },
+            set: { job.setInputLanguage($0, for: movie, track: track) })
+    }
     private var fileName: String { (job.running ? job.movie : session.current?.url)?.lastPathComponent ?? "영상을 먼저 열어 주세요." }
     private func reset() {
         let items = choices
@@ -443,6 +463,11 @@ private struct CaptionToolView: View {
                     if choices.isEmpty { Text("트랙 없음").tag("") }
                     ForEach(choices) { Text($0.title).tag($0.id) }
                 }
+                Picker("원본 언어", selection: inputLanguage) {
+                    ForEach(CaptionInputLanguage.allCases, id: \.self) { language in
+                        Text(language.title).tag(language)
+                    }
+                }.disabled(!choices.contains { $0.id == selected })
                 Picker("저장할 자막", selection: $korean) {
                     Text("한국어").tag(true)
                     Text("원어").tag(false)
@@ -450,9 +475,9 @@ private struct CaptionToolView: View {
             }
             if !job.running, let source = choices.first(where: { $0.id == selected }) {
                 if source.kind == .audio {
-                    Text("선택한 음성을 OpenAI로 보내 실제 대사의 언어를 자동 감지합니다.").font(.caption).foregroundStyle(.secondary)
-                } else if korean {
-                    Text("자막 본문의 언어를 확인하고, 번역이 필요하면 대사를 OpenAI로 보냅니다.").font(.caption).foregroundStyle(.secondary)
+                    Text("선택한 음성의 대사 구간을 OpenAI로 보냅니다.").font(.caption).foregroundStyle(.secondary)
+                } else if korean && inputLanguage.wrappedValue != .korean {
+                    Text("번역이 필요하면 선택한 자막의 대사를 OpenAI로 보냅니다.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             if job.running {

@@ -2,7 +2,8 @@
 import Foundation
 
 private final class TranscriptionFixture: URLProtocol {
-    static let audio = Data("RIFFtest-audio".utf8)
+    static let autoAudio = Data("RIFFautomatic".utf8)
+    static let japaneseAudio = Data("RIFFmanual-japanese".utf8)
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func stopLoading() {}
@@ -26,8 +27,13 @@ private final class TranscriptionFixture: URLProtocol {
         } else { preconditionFailure("Missing multipart body") }
 
         let parts = String(decoding: body, as: UTF8.self)
-        precondition(body.range(of: Self.audio) != nil)
-        precondition(!parts.contains("name=\"language") && parts.contains("gpt-transcribe"))
+        precondition(parts.contains("gpt-transcribe"))
+        if body.range(of: Self.japaneseAudio) != nil {
+            precondition(parts.components(separatedBy: "name=\"language").count == 2)
+            precondition(parts.contains("name=\"languages[]\"\r\n\r\nja\r\n"))
+        } else {
+            precondition(body.range(of: Self.autoAudio) != nil && !parts.contains("name=\"language"))
+        }
         let url = request.url!
         let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -43,8 +49,12 @@ enum TranscriptionTests {
         config.protocolClasses = [TranscriptionFixture.self]
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
-        let result = try await MediaAPI(session: session).transcribe(TranscriptionFixture.audio, key: "test")
-        precondition(result.text == "こんにちは。" && result.languages?.map(\.code) == ["ja"])
+        let api = MediaAPI(session: session)
+        let automatic = try await api.transcribe(TranscriptionFixture.autoAudio, key: "test")
+        let japanese = try await api.transcribe(TranscriptionFixture.japaneseAudio, key: "test", languageHint: "ja")
+        for result in [automatic, japanese] {
+            precondition(result.text == "こんにちは。" && result.languages?.map(\.code) == ["ja"])
+        }
         print("Transcription language regression test passed.")
     }
 }

@@ -182,11 +182,14 @@ struct MediaAPI {
         let languages: [Language]?
     }
 
-    func transcribe(_ wav: Data, key: String) async throws -> Transcript {
+    func transcribe(_ wav: Data, key: String, languageHint: String? = nil) async throws -> Transcript {
         let boundary = "JulPlayer-" + UUID().uuidString
         var data = Data()
         func append(_ text: String) { data.append(contentsOf: text.utf8) }
         append("--\(boundary)\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngpt-transcribe\r\n")
+        if let languageHint {
+            append("--\(boundary)\r\nContent-Disposition: form-data; name=\"languages[]\"\r\n\r\n\(languageHint)\r\n")
+        }
         append(
             "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
         )
