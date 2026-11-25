@@ -297,7 +297,7 @@ struct SubtitleGenerator {
         return (ordered, languages.count > 1 ? "mul" : languages.first)
     }
 
-    func generate(movie: URL, source: CaptionSource, korean: Bool, inputLanguage: CaptionInputLanguage = .automatic,
+    func generate(movie: URL, source: CaptionSource, korean: Bool, inputLanguage: CaptionInputLanguage = .automatic, model: SubtitleModel,
                   credential: () throws -> String?, originalSaved: @Sendable (URL) async -> Void = { _ in },
                   progress: @escaping Progress) async throws -> URL {
         var key: String?
@@ -344,7 +344,7 @@ struct SubtitleGenerator {
         let original = try save(cues, language: sourceLanguage ?? "und", movie: identity, reuseIdentical: true)
         guard korean && sourceLanguage != "ko" else { return original }
         await originalSaved(original)
-        let translated = try await translate(cues, key: apiKey(), inputLanguage: inputLanguage, progress: progress)
+        let translated = try await translate(cues, key: apiKey(), inputLanguage: inputLanguage, model: model, progress: progress)
         return try save(translated, language: "ko", movie: identity, reuseIdentical: false)
     }
 

@@ -74,7 +74,8 @@ private struct SubtitleStream {
 }
 
 extension SubtitleGenerator {
-    func translate(_ cues: [SubtitleCue], key: String, inputLanguage: CaptionInputLanguage, progress: @escaping Progress) async throws
+    func translate(_ cues: [SubtitleCue], key: String, inputLanguage: CaptionInputLanguage, model: SubtitleModel,
+                   progress: @escaping Progress) async throws
         -> [SubtitleCue]
     {
         var instructions = """
@@ -105,7 +106,7 @@ extension SubtitleGenerator {
             let texts: [String]
             do {
                 let answer = try await api.response(key: key, instructions: instructions, input: sourceSRT,
-                    schema: TranslationReply.schema, task: .subtitleTranslation(target: try MediaAPI.json(target)) { delta in
+                    schema: TranslationReply.schema, task: .subtitleTranslation(model: model, target: try MediaAPI.json(target)) { delta in
                         stream.append(delta)
                         let count = min(stream.lines.count, ids.count)
                         if count > reported, count >= reported + 5 || count == ids.count {

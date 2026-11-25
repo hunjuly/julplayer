@@ -8,6 +8,22 @@ struct MediaToolError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+struct SubtitleModel: Equatable {
+    static let standard = Self(id: "gpt-6.2-sol")
+    let id: String
+
+    private init(id: String) { self.id = id }
+
+    init(_ input: String) throws {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty { self = .standard; return }
+        guard value.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.union(.controlCharacters)) == nil else {
+            throw MediaToolError("모델 ID 안에 공백이나 줄바꿈이 있습니다.")
+        }
+        id = value
+    }
+}
+
 enum OpenAIKey {
     private static var item: [String: Any] {
         [
@@ -28,14 +44,19 @@ enum OpenAIKey {
         return key
     }
 
-    static func save(_ value: String) throws {
+    static func normalized(_ value: String) throws -> String {
         let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.contains(where: { $0.isWhitespace || $0.isNewline }) else { throw MediaToolError("API 키에 공백이 들어 있습니다.") }
+        return key
+    }
+
+    static func save(_ value: String) throws {
+        let key = try normalized(value)
         if key.isEmpty {
             let status = SecItemDelete(item as CFDictionary)
             if status != errSecItemNotFound { try check(status) }
             return
         }
-        guard !key.contains(where: { $0.isWhitespace || $0.isNewline }) else { throw MediaToolError("API 키에 공백이 들어 있습니다.") }
         let data = Data(key.utf8)
         let status = SecItemUpdate(item as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
@@ -101,6 +122,17 @@ struct MediaAPI {
     let session: URLSession
     init(session: URLSession = .shared) { self.session = session }
 
+    func availableModelIDs(key: String) async throws -> [String] {
+        struct Model: Decodable { let id: String }
+        struct Listing: Decodable { let data: [Model] }
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/models")!,
+                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+        let data = try await send(request)
+        let models = try JSONDecoder().decode(Listing.self, from: data).data
+        return Set(models.map(\.id).filter { !$0.isEmpty }).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
     func send(_ request: URLRequest) async throws -> Data { try await send(request, onText: nil) }
 
     private func send(_ request: URLRequest, onText: ((String) async -> Void)?) async throws -> Data {
@@ -118,6 +150,9 @@ struct MediaAPI {
             let detail = error?["message"] as? String ?? errors?.first?["message"] as? String
             if onText != nil, error?["code"] as? String == "context_length_exceeded" {
                 throw MediaToolError("이 영상의 원문 자막 전체가 번역 모델의 입력 한도를 초과했습니다.")
+            }
+            if onText != nil, error?["code"] as? String == "model_not_found" {
+                throw MediaToolError("이 API 키로 선택한 번역 모델을 사용할 수 없습니다. OpenAI 설정에서 모델 ID를 확인해 주세요.")
             }
             let delay = Double(http.value(forHTTPHeaderField: "Retry-After") ?? "") ?? Double(attempt + 1)
             let retryable = [429, 500, 502, 503, 504].contains(http.statusCode) && error?["code"] as? String != "insufficient_quota"
@@ -178,7 +213,7 @@ struct MediaAPI {
 
     enum TextTask {
         case workInfo
-        case subtitleTranslation(target: String, onText: (String) async -> Void)
+        case subtitleTranslation(model: SubtitleModel, target: String, onText: (String) async -> Void)
     }
 
     func response(key: String, instructions: String, input: String, web: Bool = false, schema: [String: Any]? = nil,
@@ -191,10 +226,10 @@ struct MediaAPI {
             onText = nil
             body["model"] = "gpt-5-mini"
             body["reasoning"] = ["effort": "low"]
-        case .subtitleTranslation(let target, let receive):
+        case .subtitleTranslation(let model, let target, let receive):
             onText = receive
-            body["model"] = "gpt-6.2-sol"
-            body["reasoning"] = ["effort": "medium"]
+            body["model"] = model.id
+            if model == .standard { body["reasoning"] = ["effort": "medium"] }
             body["stream"] = true
             body["truncation"] = "disabled"
             body["input"] = [["role": "user", "content": [

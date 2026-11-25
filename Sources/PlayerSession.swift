@@ -116,7 +116,7 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var deletionInProgress = false
     @Published var smallPictureSize: CGSize?
 
-    lazy var captionQueue = CaptionQueue { [weak self] movie, output, original in
+    lazy var captionQueue = CaptionQueue(defaults: defaults) { [weak self] movie, output, original in
         guard let self, current?.url == movie else { return }
         addSubtitles([output])
         if let original { addSubtitles([original], select: false) }

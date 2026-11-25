@@ -8,11 +8,28 @@ import os
 
 private final class CaptionFixture: URLProtocol {
     static let wholeEpisodeRequests = OSAllocatedUnfairLock(initialState: 0)
+    static let modelsByFirstCue = OSAllocatedUnfairLock(initialState: [String: [String]]())
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func stopLoading() {}
 
     override func startLoading() {
+        func respond(_ status: Int, _ json: [String: Any]) {
+            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: try! JSONSerialization.data(withJSONObject: json))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        if request.url?.path == "/v1/models" {
+            precondition(request.httpMethod == "GET" && request.httpBody == nil)
+            guard request.value(forHTTPHeaderField: "Authorization") == "Bearer test" else {
+                respond(401, ["error": ["message": "Invalid API key"]])
+                return
+            }
+            let ids = ["gpt-6.2-sol", "future-model-10", "future-model-2", "gpt-6.2-sol"]
+            respond(200, ["data": ids.map { ["id": $0] }])
+            return
+        }
         let body: Data
         if let data = request.httpBody { body = data }
         else if let stream = request.httpBodyStream {
@@ -28,12 +45,6 @@ private final class CaptionFixture: URLProtocol {
             body = data
         } else { preconditionFailure("Missing API body") }
 
-        func respond(_ status: Int, _ json: [String: Any]) {
-            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: try! JSONSerialization.data(withJSONObject: json))
-            client?.urlProtocolDidFinishLoading(self)
-        }
         if request.url?.lastPathComponent == "transcriptions" {
             precondition(String(decoding: body, as: UTF8.self).contains("name=\"languages[]\"\r\n\r\nja"))
             respond(200, ["text": "おかえり。", "languages": [["code": "ja"]]])
@@ -44,10 +55,15 @@ private final class CaptionFixture: URLProtocol {
         let parts = input[0]["content"] as! [[String: String]]
         precondition(parts.map { $0["type"] } == ["input_text", "input_text"])
         let passage = try! JSONSerialization.jsonObject(with: Data(parts[1]["text"]!.utf8)) as! [String: Any]
-        precondition(payload["model"] as? String == "gpt-6.2-sol" && payload["stream"] as? Bool == true && payload["truncation"] as? String == "disabled")
+        let model = payload["model"] as! String
+        precondition(payload["stream"] as? Bool == true && payload["truncation"] as? String == "disabled")
+        if model == SubtitleModel.standard.id { precondition((payload["reasoning"] as? [String: String])?["effort"] == "medium") }
+        else { precondition(payload["reasoning"] == nil) }
         let original = SubtitleCue.parse(parts[0]["text"]!)
         precondition(SubtitleCue.render(original) == parts[0]["text"])
         let first = original.first!.text
+        Self.modelsByFirstCue.withLock { $0[first, default: []].append(model) }
+        if model == "retired-model" { respond(404, ["error": ["code": "model_not_found"]]); return }
         let ids = (passage["firstID"] as! Int)...(passage["lastID"] as! Int)
         let previous = passage["previous"] as! [[String: Any]]
         if first == "失敗" { respond(400, ["error": ["message": "fixture error"]]); return }
@@ -123,9 +139,22 @@ enum CaptionQueueTests {
         config.protocolClasses = [CaptionFixture.self]
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
-        let generator = SubtitleGenerator(api: MediaAPI(session: session), executable: URL(fileURLWithPath: CommandLine.arguments[1]))
+        let api = MediaAPI(session: session)
+        let listed = try await api.availableModelIDs(key: "test")
+        precondition(listed == ["future-model-2", "future-model-10", "gpt-6.2-sol"])
+        do {
+            _ = try await api.availableModelIDs(key: "invalid-test-key")
+            preconditionFailure("Model lookup ignored an invalid key")
+        } catch let error as MediaToolError { precondition(error.message.contains("401")) }
+        let generator = SubtitleGenerator(api: api, executable: URL(fileURLWithPath: CommandLine.arguments[1]))
+        let suite = "local.julplayer.tests.caption-model." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
         var finished = [URL]()
-        let queue = CaptionQueue(generator: generator, credential: { "test" }) { movie, _, _ in finished.append(movie) }
+        let queue = CaptionQueue(generator: generator, credential: { "test" }, defaults: defaults) { movie, _, _ in finished.append(movie) }
+        let chosen = try SubtitleModel(" \nft:Studio:future-model:123 ")
+        precondition(chosen.id == "ft:Studio:future-model:123" && queue.translationModel.id == "gpt-6.2-sol")
+        precondition((try? SubtitleModel("bad model")) == nil && (try? SubtitleModel("  \n")) == .standard)
         let movies = (1...5).map { root.appendingPathComponent("\($0).mkv") }
         let texts = [(0..<480).map { "本編\($0)" }, ["失敗"], ["待機"], ["消去"], ["おはよう。"]]
         for (movie, lines) in zip(movies, texts) {
@@ -143,6 +172,9 @@ enum CaptionQueueTests {
         queue.enqueue(movies, using: movie, source: source, korean: true)
         queue.enqueue(movies, using: movie, source: source, korean: true)
         precondition(queue.items.count == 5 && queue.items[0].state == .running && queue.items[1].state == .waiting)
+        queue.translationModel = chosen
+        let reopened = CaptionQueue(defaults: UserDefaults(suiteName: suite)!) { _, _, _ in }
+        precondition(reopened.translationModel == chosen)
         queue.remove(queue.items[3].id)
         queue.setInputLanguage(.english, for: movie, track: source.id)
         try await wait { queue.items[2].message == "한국어 자막 수신 1 / 1" }
@@ -152,6 +184,9 @@ enum CaptionQueueTests {
         try await wait { queue.items.last?.state == .completed }
         precondition(queue.items.map(\.state) == [.completed, .failed, .cancelled, .completed] && finished == [movies[0], movies[4]])
         precondition(CaptionFixture.wholeEpisodeRequests.withLock { $0 } == 1)
+        let models = CaptionFixture.modelsByFirstCue.withLock { $0 }
+        precondition(models["本編0"] == [SubtitleModel.standard.id])
+        precondition(["失敗", "待機", "おはよう。"].allSatisfy { models[$0] == [chosen.id] })
         precondition(queue.items.allSatisfy { $0.language == .japanese })
         for item in queue.items {
             let original = try String(contentsOf: item.original!, encoding: .utf8)
@@ -185,22 +220,35 @@ enum CaptionQueueTests {
         let transcript = try String(contentsOf: spoken.original!, encoding: .utf8)
         precondition(spoken.source.map == "0:a:0" && spoken.original?.lastPathComponent == "audio.ja.srt")
         precondition(SubtitleCue.parse(transcript).first?.text == "おかえり。" && spoken.output?.lastPathComponent == "audio.ko.srt")
+        precondition(CaptionFixture.modelsByFirstCue.withLock { $0["おかえり。"] } == [chosen.id])
 
+        queue.translationModel = try SubtitleModel("")
+        precondition(CaptionQueue(defaults: UserDefaults(suiteName: suite)!) { _, _, _ in }.translationModel == .standard)
+        precondition(defaults.persistentDomain(forName: suite)?.isEmpty != false)
         for script in [["続き", "二", "三", "四", "五", "六", "終わり"], ["再開", "二", "三", "四"]] {
             let cues = script.enumerated().map { SubtitleCue(start: Double($0.offset), end: Double($0.offset + 1), text: $0.element) }
-            let translated = try await generator.translate(cues, key: "test", inputLanguage: .japanese) { _, _ in }
+            let translated = try await generator.translate(cues, key: "test", inputLanguage: .japanese, model: chosen) { _, _ in }
             let expected = script.indices.map { "대사 \($0 + 1)" }
             precondition(translated.map(\.text) == (script.count == 7 ? ["괄호 }와 \"대사\"", "이어서"] + expected.dropFirst(2) : expected))
             precondition(translated.map(\.end) == cues.map(\.end))
+            let received = CaptionFixture.modelsByFirstCue.withLock { $0[script[0]] ?? [] }
+            precondition(received.count > 1 && received.allSatisfy { $0 == chosen.id })
         }
         for marker in ["欠番", "重複", "未完"] {
             let script = [marker, "二", "三", "四"]
             let cues = script.enumerated().map { SubtitleCue(start: Double($0.offset), end: Double($0.offset + 1), text: $0.element) }
             do {
-                _ = try await generator.translate(cues, key: "test", inputLanguage: .japanese) { _, _ in }
+                _ = try await generator.translate(cues, key: "test", inputLanguage: .japanese, model: chosen) { _, _ in }
                 preconditionFailure("An invalid translation was accepted")
             } catch is MediaToolError {}
         }
-        print("Caption queue, whole-episode translation, output-limit recovery, and SRT integrity passed.")
+        let retired = try SubtitleModel("retired-model")
+        do {
+            let cue = SubtitleCue(start: 0, end: 1, text: "引退")
+            _ = try await generator.translate([cue], key: "test", inputLanguage: .japanese, model: retired) { _, _ in }
+            preconditionFailure("Retired model did not fail")
+        } catch let error as MediaToolError { precondition(error.message.contains("OpenAI 설정")) }
+        precondition(CaptionFixture.modelsByFirstCue.withLock { $0["引退"] } == [retired.id])
+        print("Model discovery, saved preferences, per-job selection, whole-episode translation, output-limit recovery, and SRT integrity passed.")
     }
 }

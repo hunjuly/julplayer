@@ -238,8 +238,8 @@ final class MediaToolsController: NSObject, NSWindowDelegate {
     func showSettings() {
         if settingsWindow == nil {
             settingsWindow = makeWindow(
-                "OpenAI 설정", size: NSSize(width: 430, height: 190), minimum: NSSize(width: 370, height: 175),
-                content: AIKeyView(close: { [weak self] in self?.settingsWindow?.close() }))
+                "OpenAI 설정", size: NSSize(width: 460, height: 255), minimum: NSSize(width: 390, height: 245),
+                content: OpenAISettingsView(queue: session.captionQueue, close: { [weak self] in self?.settingsWindow?.close() }))
         }
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
@@ -366,37 +366,130 @@ private struct WorkInfoView: View {
     }
 }
 
-private struct AIKeyView: View {
+private struct OpenAISettingsView: View {
+    let queue: CaptionQueue
     let close: () -> Void
     @Environment(\.openURL) private var openURL
     @ViewState private var input = ""
+    @ViewState private var modelID = ""
+    @ViewState private var showsModels = false
     @ViewState private var hasKey = false
     @ViewState private var error = ""
+
+    private var hasNewKey: Bool { !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("개인 API 키를 이 Mac의 키체인에 저장합니다. OpenAI 사용료는 연결한 API 계정에 청구됩니다.").font(.callout)
-            SecureField(hasKey ? "새 API 키" : "OpenAI API 키", text: $input)
-            if !error.isEmpty { Text(error).foregroundStyle(.orange) }
+            VStack(alignment: .leading, spacing: 5) {
+                Text("API 키").font(.headline)
+                SecureField(hasKey ? "새 API 키" : "OpenAI API 키", text: $input).accessibilityLabel("OpenAI API 키")
+                Text("키는 Mac 키체인에 저장되며, 사용료는 연결한 OpenAI 계정에 청구됩니다.").font(.caption).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 5) {
+                Text("자막 번역 모델").font(.headline)
+                HStack {
+                    TextField(SubtitleModel.standard.id, text: $modelID)
+                        .accessibilityLabel("자막 번역 모델 ID").help("비우고 저장하면 \(SubtitleModel.standard.id)을 사용합니다.")
+                    Button("모델 목록") { showsModels = true }.disabled(!hasKey && !hasNewKey)
+                        .popover(isPresented: $showsModels) {
+                            AccountModelList(selected: modelID, fetch: availableModels) { id in
+                                modelID = id
+                                showsModels = false
+                            }
+                        }
+                }
+                Text("Responses API에서 구조화된 출력을 지원하는 텍스트 모델을 선택하세요.").font(.caption).foregroundStyle(.secondary)
+            }
+            if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.orange).lineLimit(2).help(error) }
+            Spacer(minLength: 0)
             HStack {
                 if hasKey {
-                    Button("저장된 키 삭제") { save("") }
+                    Button("저장된 키 삭제", action: deleteKey)
                 } else {
                     Button { openURL(URL(string: "https://platform.openai.com/api-keys")!) } label: {
                         Label("API 키 발급", systemImage: "arrow.up.right")
                     }
                 }
                 Spacer()
-                Button("저장") { save(input) }.keyboardShortcut(.defaultAction).disabled(
-                    input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("저장", action: save).keyboardShortcut(.defaultAction)
+                    .disabled(!hasNewKey && (try? SubtitleModel(modelID)) == queue.translationModel)
             }
         }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .onAppear { do { hasKey = try OpenAIKey.read() != nil } catch { self.error = error.localizedDescription } }
+            .onAppear {
+                modelID = queue.translationModel.id
+                do { hasKey = try OpenAIKey.read() != nil } catch { self.error = error.localizedDescription }
+            }
     }
-    private func save(_ key: String) {
+
+    private func availableModels() async throws -> [String] {
+        let key = try hasNewKey ? OpenAIKey.normalized(input) : OpenAIKey.read()
+        guard let key else { throw MediaToolError("모델 목록을 불러오려면 API 키를 입력해 주세요.") }
+        return try await MediaAPI().availableModelIDs(key: key)
+    }
+
+    private func save() {
         do {
-            try OpenAIKey.save(key)
-            input = ""
+            let model = try SubtitleModel(modelID)
+            if hasNewKey { try OpenAIKey.save(input) }
+            queue.translationModel = model
             close()
         } catch { self.error = error.localizedDescription }
+    }
+
+    private func deleteKey() {
+        do {
+            try OpenAIKey.save("")
+            close()
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
+private struct AccountModelList: View {
+    let selected: String
+    let fetch: () async throws -> [String]
+    let choose: (String) -> Void
+    @ViewState private var ids: [String]?
+    @ViewState private var query = ""
+    @ViewState private var error = ""
+    @ViewState private var attempt = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("모델 ID 검색", text: $query)
+            if !error.isEmpty {
+                Text(error).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                Button("다시 시도") { attempt += 1 }
+            } else if let ids {
+                let matches = query.isEmpty ? ids : ids.filter { $0.localizedCaseInsensitiveContains(query) }
+                if matches.isEmpty { Text("표시할 모델이 없습니다.").foregroundStyle(.secondary) }
+                ScrollView {
+                    LazyVStack(spacing: 3) {
+                        ForEach(matches, id: \.self) { id in
+                            Button {
+                                choose(id)
+                            } label: {
+                                HStack {
+                                    Text(verbatim: id).lineLimit(1).truncationMode(.middle)
+                                    Spacer(minLength: 4)
+                                    if id == selected { Image(systemName: "checkmark") }
+                                }.frame(maxWidth: .infinity)
+                            }.help(id)
+                        }
+                    }
+                }
+            } else {
+                ProgressView("계정 모델 조회 중").controlSize(.small)
+            }
+        }
+        .padding(12).frame(width: 305, height: 235, alignment: .topLeading).buttonStyle(.bordered)
+        .task(id: attempt) {
+            error = ""
+            ids = nil
+            do {
+                let models = try await fetch()
+                try Task.checkCancellation()
+                ids = models
+            } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        }
     }
 }

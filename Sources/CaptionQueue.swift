@@ -21,14 +21,25 @@ final class CaptionQueue: ObservableObject {
     }
 
     @Published private(set) var items = [Item]()
+    @Published var translationModel: SubtitleModel {
+        didSet {
+            if translationModel == .standard { defaults.removeObject(forKey: Self.modelKey) }
+            else { defaults.set(translationModel.id, forKey: Self.modelKey) }
+        }
+    }
     @Published private var inputLanguages = [URL: [String: CaptionInputLanguage]]()
+    private static let modelKey = "subtitleTranslationModel"
+    private let defaults: UserDefaults
     private var worker: Task<Void, Never>?
     private let generator: SubtitleGenerator
     private let credential: () throws -> String?
     private let completed: (URL, URL, URL?) -> Void
 
     init(generator: SubtitleGenerator = SubtitleGenerator(api: MediaAPI(), executable: SubtitleGenerator.bundledTool),
-         credential: @escaping () throws -> String? = OpenAIKey.read, completed: @escaping (URL, URL, URL?) -> Void) {
+         credential: @escaping () throws -> String? = OpenAIKey.read, defaults: UserDefaults = .standard,
+         completed: @escaping (URL, URL, URL?) -> Void) {
+        self.defaults = defaults
+        translationModel = (try? SubtitleModel(defaults.string(forKey: Self.modelKey) ?? "")) ?? .standard
         self.generator = generator
         self.credential = credential
         self.completed = completed
@@ -76,6 +87,7 @@ final class CaptionQueue: ObservableObject {
 
     private func startNext() {
         guard worker == nil, let item = items.first(where: { $0.state == .waiting }) else { return }
+        let model = translationModel
         update(item.id) {
             $0.state = .running
             $0.message = "자막 준비 중"
@@ -83,7 +95,7 @@ final class CaptionQueue: ObservableObject {
         worker = Task {
             do {
                 let url = try await generator.generate(
-                    movie: item.movie, source: item.source, korean: item.korean, inputLanguage: item.language,
+                    movie: item.movie, source: item.source, korean: item.korean, inputLanguage: item.language, model: model,
                     credential: credential, originalSaved: { url in
                         await self.update(item.id) { $0.original = url }
                     }, progress: { message, fraction in
