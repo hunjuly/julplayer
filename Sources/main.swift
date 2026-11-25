@@ -159,6 +159,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
             }
         }
         session.openCaptionGenerator = { [weak self] in self?.mediaTools.showCaptions() }
+        session.openWorkInfo = { [weak self] in self?.workInfo() }
         session.selectionDidChange = { [weak self] in
             guard let self else { return }
             self.needsVideoHeight = false
@@ -419,14 +420,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         }
         let app = menu("JulPlayer")
         add(app, "JulPlayer 정보", #selector(about), target: self)
-        add(app, "OpenAI 설정…", #selector(aiSettings), key: ",", target: self)
+        add(app, "OpenAI 설정", #selector(aiSettings), key: ",", target: self)
         app.addItem(.separator())
         add(app, "JulPlayer 가리기", #selector(NSApplication.hide(_:)), key: "h", target: NSApp)
         add(app, "JulPlayer 종료", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp)
         let file = menu("파일")
-        add(file, "동영상 열기…", #selector(openFiles), key: "o", target: self)
+        add(file, "동영상 열기", #selector(openFiles), key: "o", target: self)
         add(file, "작품 정보", #selector(workInfo), key: "i", target: self)
-        add(file, "현재 영상과 자막 삭제…", #selector(deleteFile), key: "\u{8}", modifiers: [], target: self)
+        add(file, "현재 영상과 자막 삭제", #selector(deleteFile), key: "\u{8}", modifiers: [], target: self)
         add(file, "현재 영상과 자막 바로 삭제", #selector(deleteFileImmediately), key: "\u{8}", target: self)
         let associationItem = NSMenuItem(title: "기본 플레이어로 연결", action: nil, keyEquivalent: "")
         let formats = NSMenu(title: associationItem.title)
@@ -464,9 +465,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
         brightnessItem.submenu = brightnessMenu
         add(play, "음소거 전환", #selector(toggleMute), key: "m", modifiers: [], target: self)
         add(play, "자막 켜기 / 끄기", #selector(toggleCaptions), key: "c", modifiers: [], target: self)
-        add(play, "오디오 스트림 및 싱크…", #selector(audioPanel), target: self)
-        add(play, "자막 스트림 및 싱크…", #selector(subtitlePanel), target: self)
-        add(play, "AI 자막 생성…", #selector(generateCaptions), target: self)
+        add(play, "오디오 스트림 및 싱크", #selector(audioPanel), target: self)
+        add(play, "자막 스트림 및 싱크", #selector(subtitlePanel), target: self)
+        add(play, "AI 자막 생성", #selector(generateCaptions), target: self)
         let sizeItem = play.addItem(withTitle: "자막 크기", action: nil, keyEquivalent: "")
         let sizes = NSMenu(title: sizeItem.title)
         for size in SubtitleSize.allCases {

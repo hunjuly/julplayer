@@ -57,7 +57,7 @@ enum PlayerWindowLayout {
 
 struct PlaybackControlLayout: Equatable {
     enum Item: Hashable {
-        case previous, back60, back10, play, ahead10, ahead60, next, mute, volume, brightness, audio, subtitles, trash
+        case previous, back60, back10, play, ahead10, ahead60, next, mute, volume, brightness, audio, subtitles, workInfo, trash
 
         var width: CGFloat {
             switch self {
@@ -78,11 +78,11 @@ struct PlaybackControlLayout: Equatable {
     private static let sections: [[Item]] = [
         [.mute, .volume],
         [.previous, .back60, .back10, .play, .ahead10, .ahead60, .next],
-        [.brightness, .audio, .subtitles, .trash]
+        [.brightness, .audio, .subtitles, .workInfo, .trash]
     ]
     private static let priorities: [[Item]] = [
         [.back10, .ahead10], [.brightness], [.previous, .next], [.back60, .ahead60],
-        [.mute], [.subtitles], [.audio], [.trash], [.volume]
+        [.mute], [.subtitles], [.workInfo], [.audio], [.trash], [.volume]
     ]
 
     let sound, transport, options: [Item]

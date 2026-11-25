@@ -283,7 +283,7 @@ final class MediaToolsController: NSObject, NSWindowDelegate {
         window.title = title
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let host = NSHostingView(rootView: content.preferredColorScheme(.dark))
+        let host = NSHostingView(rootView: content.buttonStyle(.bordered).preferredColorScheme(.dark))
         host.sizingOptions = []
         window.contentView = host
         window.contentMinSize = minimum
@@ -345,6 +345,20 @@ final class MediaToolsController: NSObject, NSWindowDelegate {
     }
 }
 
+private struct SavedFileRow: View {
+    let url: URL
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(url.lastPathComponent)
+                .lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                .help(url.lastPathComponent)
+            Button("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                .fixedSize()
+        }
+    }
+}
+
 private struct WorkInfoView: View {
     @ObservedObject var model: WorkInfoModel
     let settings: () -> Void
@@ -376,8 +390,7 @@ private struct WorkInfoView: View {
                 if let url = model.savedURL {
                     Divider()
                     HStack {
-                        Button(url.lastPathComponent) { NSWorkspace.shared.activateFileViewerSelecting([url]) }.buttonStyle(.link)
-                            .help("Finder에서 보기")
+                        SavedFileRow(url: url)
                         Spacer()
                         if model.busy {
                             ProgressView().controlSize(.small)
@@ -413,19 +426,19 @@ private struct WorkInfoView: View {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(record.title).fontWeight(.semibold)
                                         if !record.detail.isEmpty { Text(record.detail).font(.caption).foregroundStyle(.secondary) }
-                                    }.frame(maxWidth: .infinity, alignment: .leading).padding(7).contentShape(Rectangle())
-                                }.buttonStyle(.plain)
-                                if !model.error.isEmpty && record.fromCatalogue {
-                                    Button("AniList 원문으로 저장") { model.choose(record, original: true) }.buttonStyle(.link)
+                                    }.multilineTextAlignment(.leading)
+                                        .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3)
                                 }
-                                Divider()
+                                if !model.error.isEmpty && record.fromCatalogue {
+                                    Button("AniList 원문으로 저장") { model.choose(record, original: true) }
+                                }
                             }
                         }
                     }
                 } else {
                     Spacer()
                 }
-                Button("OpenAI 설정…", action: settings).buttonStyle(.link)
+                Button("OpenAI 설정", action: settings)
             }
             if !model.error.isEmpty { Text(model.error).foregroundStyle(.orange).textSelection(.enabled) }
         }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -487,12 +500,12 @@ private struct CaptionToolView: View {
                 if !job.message.isEmpty { Text(job.message).font(.callout) }
                 if !job.error.isEmpty { Text(job.error).foregroundStyle(.orange).textSelection(.enabled) }
                 if let output = job.output {
-                    Button(output.lastPathComponent) { NSWorkspace.shared.activateFileViewerSelecting([output]) }.buttonStyle(.link)
+                    SavedFileRow(url: output)
                 }
             }
             Spacer(minLength: 0)
             HStack {
-                Button("OpenAI 설정…", action: settings).buttonStyle(.link)
+                Button("OpenAI 설정", action: settings)
                 Spacer()
                 if job.running {
                     Button("생성 취소", action: job.cancel)
@@ -518,6 +531,7 @@ private struct CaptionToolView: View {
 
 private struct AIKeyView: View {
     let close: () -> Void
+    @Environment(\.openURL) private var openURL
     @ViewState private var input = ""
     @ViewState private var hasKey = false
     @ViewState private var error = ""
@@ -530,7 +544,9 @@ private struct AIKeyView: View {
                 if hasKey {
                     Button("저장된 키 삭제") { save("") }
                 } else {
-                    Link("API 키 발급", destination: URL(string: "https://platform.openai.com/api-keys")!)
+                    Button { openURL(URL(string: "https://platform.openai.com/api-keys")!) } label: {
+                        Label("API 키 발급", systemImage: "arrow.up.right")
+                    }
                 }
                 Spacer()
                 Button("저장") { save(input) }.keyboardShortcut(.defaultAction).disabled(

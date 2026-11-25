@@ -273,7 +273,7 @@ private struct Controls: View {
                 Text(session.duration == 0 ? "–:––" : session.showsRemaining
                      ? "−" + timecode(session.duration - session.position) : timecode(session.duration))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered).controlSize(.mini).fixedSize()
             .help(session.showsRemaining ? "전체 시간 표시" : "남은 시간 표시")
             .accessibilityLabel(session.showsRemaining ? "남은 시간" : "전체 시간")
         }
@@ -318,6 +318,8 @@ private struct Controls: View {
         case .subtitles:
             let on = session.streams.contains { $0.kind == .subtitle && $0.selected }
             IconControl(on ? "captions.bubble.fill" : "captions.bubble", label: "자막 스트림 및 싱크") { session.panel = .stream(.subtitle) }
+        case .workInfo:
+            IconControl("info.circle", label: "작품 정보 (⌘I)") { session.openWorkInfo?() }
         case .trash:
             HStack(spacing: 0) {
                 Divider().frame(height: 15)
@@ -503,6 +505,14 @@ private struct StreamPanel: View {
     @ObservedObject var session: PlayerSession
     let kind: StreamKind
     private var delay: Double { kind == .audio ? session.audioDelay : session.subtitleDelay }
+
+    private func syncButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).frame(width: 16, height: 16)
+        }
+        .help(label).accessibilityLabel(label)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(kind == .audio ? "오디오 스트림" : "자막 스트림").font(.headline)
@@ -516,10 +526,14 @@ private struct StreamPanel: View {
                 }
             }.frame(height: min(174, CGFloat(rows.count + 1) * 30))
             if kind == .subtitle {
-                HStack(spacing: 14) {
-                    Button("외부 자막 열기…", action: session.chooseSubtitles)
-                    Button("AI 자막 생성…") { session.openCaptionGenerator?() }
-                }.buttonStyle(.link)
+                HStack(spacing: 8) {
+                    Button(action: session.chooseSubtitles) {
+                        Text("외부 자막 열기").frame(maxWidth: .infinity)
+                    }
+                    Button { session.openCaptionGenerator?() } label: {
+                        Text("AI 자막 생성").frame(maxWidth: .infinity)
+                    }
+                }
                 Picker("자막 크기", selection: $session.subtitleSize) {
                     ForEach(SubtitleSize.allCases, id: \.self) { size in
                         Text(size.title).tag(size)
@@ -530,19 +544,16 @@ private struct StreamPanel: View {
             HStack {
                 Text(kind == .audio ? "오디오 싱크" : "자막 싱크").font(.subheadline.weight(.semibold))
                 Spacer()
-                Button { session.setDelay(kind, seconds: 0) } label: { Image(systemName: "arrow.counterclockwise") }
-                    .buttonStyle(.plain).help("싱크 초기화").accessibilityLabel("싱크 초기화")
+                syncButton("arrow.counterclockwise", "싱크 초기화") { session.setDelay(kind, seconds: 0) }
             }
             HStack {
-                Button { session.setDelay(kind, seconds: delay - 0.1) } label: { Image(systemName: "minus") }
-                    .accessibilityLabel("0.1초 앞당기기")
+                syncButton("minus", "0.1초 앞당기기") { session.setDelay(kind, seconds: delay - 0.1) }
                 Spacer()
                 Text(String(format: "%+.1f초",delay)).monospacedDigit()
                 Spacer()
-                Button { session.setDelay(kind, seconds: delay + 0.1) } label: { Image(systemName: "plus") }
-                    .accessibilityLabel("0.1초 늦추기")
+                syncButton("plus", "0.1초 늦추기") { session.setDelay(kind, seconds: delay + 0.1) }
             }
-        }.padding(13).frame(width: 250).preferredColorScheme(.dark)
+        }.buttonStyle(.bordered).padding(13).frame(width: 250).preferredColorScheme(.dark)
     }
 }
 

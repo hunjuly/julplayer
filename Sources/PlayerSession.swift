@@ -115,6 +115,7 @@ final class PlayerSession: ObservableObject {
     @Published var smallPictureSize: CGSize?
 
     var openCaptionGenerator: (() -> Void)?
+    var openWorkInfo: (() -> Void)?
     var selectionDidChange: (() -> Void)?
     var videoSizeDidChange: (() -> Void)?
     var windowStateChanged: (() -> Void)?
