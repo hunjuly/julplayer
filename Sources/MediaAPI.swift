@@ -101,16 +101,24 @@ struct MediaAPI {
     let session: URLSession
     init(session: URLSession = .shared) { self.session = session }
 
-    func send(_ request: URLRequest) async throws -> Data {
+    func send(_ request: URLRequest) async throws -> Data { try await send(request, onText: nil) }
+
+    private func send(_ request: URLRequest, onText: ((String) async -> Void)?) async throws -> Data {
         for attempt in 0...2 {
             try Task.checkCancellation()
-            let (data, response) = try await session.data(for: request)
+            let data: Data
+            let response: URLResponse
+            if let onText { (data, response) = try await streamedResponse(request, onText: onText) }
+            else { (data, response) = try await session.data(for: request) }
             guard let http = response as? HTTPURLResponse else { throw MediaToolError("서버 응답을 읽을 수 없습니다.") }
             if (200..<300).contains(http.statusCode) { return data }
             let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             let error = body?["error"] as? [String: Any]
             let errors = body?["errors"] as? [[String: Any]]
             let detail = error?["message"] as? String ?? errors?.first?["message"] as? String
+            if onText != nil, error?["code"] as? String == "context_length_exceeded" {
+                throw MediaToolError("이 영상의 원문 자막 전체가 번역 모델의 입력 한도를 초과했습니다.")
+            }
             let delay = Double(http.value(forHTTPHeaderField: "Retry-After") ?? "") ?? Double(attempt + 1)
             let retryable = [429, 500, 502, 503, 504].contains(http.statusCode) && error?["code"] as? String != "insufficient_quota"
             if retryable, attempt < 2, delay.isFinite, (0...15).contains(delay) {
@@ -126,34 +134,87 @@ struct MediaAPI {
         throw MediaToolError("서버에 연결할 수 없습니다.")
     }
 
+    // A full episode can take several minutes. Consume one Responses API stream until its terminal event.
+    private func streamedResponse(_ request: URLRequest, onText: (String) async -> Void) async throws -> (Data, URLResponse) {
+        let (bytes, headers) = try await session.bytes(for: request)
+        return try await withTaskCancellationHandler {
+            defer { bytes.task.cancel() }
+            guard let http = headers as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                  headers.mimeType == "text/event-stream" else {
+                var body = Data()
+                for try await byte in bytes { body.append(byte) }
+                return (body, headers)
+            }
+            for try await line in bytes.lines where line.hasPrefix("data:") {
+                try Task.checkCancellation()
+                let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                if payload == "[DONE]" { break }
+                guard let event = try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any] else { continue }
+                switch event["type"] as? String {
+                case "response.output_text.delta":
+                    if let delta = event["delta"] as? String { await onText(delta) }
+                case "response.completed", "response.incomplete", "response.failed":
+                    if let response = event["response"] as? [String: Any] {
+                        return (try JSONSerialization.data(withJSONObject: response), headers)
+                    }
+                case "error":
+                    throw MediaToolError(event["message"] as? String ?? "OpenAI에서 번역 응답을 중단했습니다.")
+                default: continue
+                }
+            }
+            throw MediaToolError("전체 자막을 받기 전에 연결이 끊겼습니다. 다시 시도해 주세요.")
+        } onCancel: { bytes.task.cancel() }
+    }
+
     struct Answer {
         let text: String
         let sources: [URL]
     }
 
-    func response(key: String, instructions: String, input: String, web: Bool = false, schema: [String: Any]? = nil) async throws
-        -> Answer
+    struct OutputLimit: LocalizedError {
+        let partialText: String
+        var errorDescription: String? { "번역문이 모델의 한 번 응답 한도를 초과했습니다." }
+    }
+
+    enum TextTask {
+        case workInfo
+        case subtitleTranslation(target: String, onText: (String) async -> Void)
+    }
+
+    func response(key: String, instructions: String, input: String, web: Bool = false, schema: [String: Any]? = nil,
+                  task: TextTask = .workInfo) async throws -> Answer
     {
-        var body: [String: Any] = [
-            "model": "gpt-5-mini", "instructions": instructions, "input": input, "store": false,
-            "reasoning": ["effort": "low"],
-        ]
+        let onText: ((String) async -> Void)?
+        var body: [String: Any] = ["instructions": instructions, "input": input, "store": false]
+        switch task {
+        case .workInfo:
+            onText = nil
+            body["model"] = "gpt-5-mini"
+            body["reasoning"] = ["effort": "low"]
+        case .subtitleTranslation(let target, let receive):
+            onText = receive
+            body["model"] = "gpt-6.2-sol"
+            body["reasoning"] = ["effort": "medium"]
+            body["stream"] = true
+            body["truncation"] = "disabled"
+            body["input"] = [["role": "user", "content": [
+                ["type": "input_text", "text": input], ["type": "input_text", "text": target],
+            ]]]
+        }
         if let schema { body["text"] = ["format": ["type": "json_schema", "name": "result", "strict": true, "schema": schema]] }
         if web {
             body["tools"] = [["type": "web_search"]]
             body["tool_choice"] = "required"
             body["include"] = ["web_search_call.action.sources"]
         }
-        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!, timeoutInterval: 120)
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!, timeoutInterval: onText == nil ? 120 : 600)
         request.httpMethod = "POST"
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let data = try await send(request)
+        let data = try await send(request, onText: onText)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard json?["status"] as? String == "completed", let outputs = json?["output"] as? [[String: Any]] else {
-            throw MediaToolError("OpenAI가 응답을 끝내지 못했습니다. 다시 시도해 주세요.")
-        }
+        let outputs = json?["output"] as? [[String: Any]] ?? []
         var text = [String]()
         var sources = [URL]()
         for item in outputs {
@@ -172,6 +233,15 @@ struct MediaAPI {
             }
         }
         let result = text.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let status = json?["status"] as? String
+        if onText != nil, status == "incomplete",
+           (json?["incomplete_details"] as? [String: Any])?["reason"] as? String == "max_output_tokens" {
+            throw OutputLimit(partialText: result)
+        }
+        guard status == "completed" else {
+            let detail = (json?["error"] as? [String: Any])?["message"] as? String
+            throw MediaToolError(detail ?? "OpenAI가 응답을 끝내지 못했습니다. 다시 시도해 주세요.")
+        }
         guard !result.isEmpty else { throw MediaToolError("OpenAI에서 결과를 받지 못했습니다.") }
         return Answer(text: result, sources: sources)
     }

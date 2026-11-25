@@ -86,7 +86,7 @@ struct CaptionSidebar: View {
             if source.kind == .audio {
                 Text("선택한 음성의 대사 구간을 OpenAI로 보냅니다.").font(.caption).foregroundStyle(.secondary)
             } else if korean && inputLanguage.wrappedValue != .korean {
-                Text("번역할 자막의 대사를 OpenAI로 보냅니다.").font(.caption).foregroundStyle(.secondary)
+                Text("한 편의 원문 자막 전체를 GPT-6.2 Sol로 번역합니다.").font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 Button("현재 영상 추가") { add([movie], movie: movie, source: source) }
