@@ -108,7 +108,10 @@ struct PlaybackControlLayout: Equatable {
         let shortSeeks = Self.rowWidth([.back10, .play, .ahead10])
         let minimumTimeline = min(150, max(0, available - shortSeeks - Self.sectionGap))
         playOnly = width <= PlayerWindowLayout.minimumContent.width + 1
-        stackedFooter = !playOnly && size.height >= 220 && Self.footerWidth(for: items, timeline: 200) > available
+        let fullTransport = Self.sections[1]
+        let fullToolsWidth = Self.footerWidth(for: items.subtracting(fullTransport), timeline: 0)
+        let fullSide = max(Self.rowWidth(fullTransport), fullToolsWidth) + Self.sectionGap
+        stackedFooter = !playOnly && size.height >= 220 && available - 2 * fullSide < 200
         var visible: Set<Item> = [.play]
         if !playOnly {
             for group in Self.priorities {
@@ -120,14 +123,16 @@ struct PlaybackControlLayout: Equatable {
             }
         }
         sound = Self.sections[0].filter(visible.contains)
-        transport = Self.sections[1].filter(visible.contains)
+        transport = fullTransport.filter(visible.contains)
         options = Self.sections[2].filter(visible.contains)
-        // Center play and seek, borrowing space if the timeline or the side buttons need it.
-        let sides = max(0, available - Self.rowWidth(transport))
+        let transportWidth = Self.rowWidth(transport)
         let soundWidth = sound.isEmpty ? 0 : Self.rowWidth(sound) + Self.sectionGap
         let optionsWidth = options.isEmpty ? 0 : Self.rowWidth(options) + Self.sectionGap
-        let left = stackedFooter ? soundWidth : minimumTimeline + Self.sectionGap
+        let left = stackedFooter ? soundWidth : transportWidth + Self.sectionGap
         let right = optionsWidth + (stackedFooter ? 0 : soundWidth)
+        // Balance the sides around the timeline. In short windows, leave enough room to seek.
+        let sides = stackedFooter ? max(0, available - transportWidth)
+            : min(2 * max(left, right), max(0, available - minimumTimeline))
         leadingSpan = min(max(sides / 2, left), max(0, sides - right))
         trailingSpan = sides - leadingSpan
     }

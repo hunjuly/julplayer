@@ -243,12 +243,15 @@ private struct Controls: View {
             } else {
                 if layout.stackedFooter { timeline }
                 HStack(spacing: 0) {
-                    Group {
-                        if layout.stackedFooter { row(layout.sound).footerShadow() }
-                        else { timeline.padding(.trailing, PlaybackControlLayout.sectionGap) }
+                    if layout.stackedFooter {
+                        row(layout.sound).footerShadow()
+                            .frame(width: layout.leadingSpan, alignment: .leading)
+                        row(layout.transport)
+                    } else {
+                        row(layout.transport)
+                            .frame(width: layout.leadingSpan, alignment: .leading)
+                        timeline
                     }
-                    .frame(width: layout.leadingSpan, alignment: .leading)
-                    row(layout.transport)
                     HStack(spacing: PlaybackControlLayout.sectionGap) {
                         if !layout.stackedFooter && !layout.sound.isEmpty { row(layout.sound) }
                         if !layout.options.isEmpty { row(layout.options) }
@@ -269,28 +272,35 @@ private struct Controls: View {
     }
 
     private var timeline: some View {
-        HStack(spacing: 10) {
-            Text(timecode(session.position))
+        let elapsed = timecode(session.position)
+        let total = session.duration > 0 ? timecode(session.duration) : "––:––"
+        return HStack(spacing: 10) {
+            timeLabel(elapsed, matching: total, alignment: .trailing)
             PlayerSlider(
                 value: session.duration > 0 ? session.position / session.duration : 0,
-                tint: amber, name: "재생 위치", reading: timecode(session.position),
+                tint: amber, name: "재생 위치", reading: elapsed,
                 trackHeight: 7, thumbDiameter: 14, hitHeight: 32,
                 hoverLabel: { timecode($0 * session.duration) },
                 change: { session.seek(to: $0 * session.duration) },
                 tracking: { session.scrubbing = $0 }
             )
             .disabled(session.duration == 0)
-            Button { session.showsRemaining.toggle() } label: {
-                Text(session.duration == 0 ? "–:––" : session.showsRemaining
-                     ? "−" + timecode(session.duration - session.position) : timecode(session.duration))
-            }
-            .buttonStyle(.bordered).controlSize(.mini).fixedSize()
-            .help(session.showsRemaining ? "전체 시간 표시" : "남은 시간 표시")
-            .accessibilityLabel(session.showsRemaining ? "남은 시간" : "전체 시간")
+            timeLabel(total, matching: elapsed, alignment: .leading)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("전체 시간")
+                .accessibilityValue(total)
         }
         .font(.system(size: 11, weight: .medium, design: .monospaced))
         .foregroundStyle(.white.opacity(0.96))
         .footerShadow()
+    }
+
+    private func timeLabel(_ value: String, matching other: String, alignment: Alignment) -> some View {
+        ZStack(alignment: alignment) {
+            Text(verbatim: other).hidden().accessibilityHidden(true)
+            Text(verbatim: value)
+        }
+        .fixedSize()
     }
 
     private func row(_ items: [PlaybackControlLayout.Item]) -> some View {

@@ -103,7 +103,6 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var subtitleDelay = 0.0
     @Published private(set) var audioDelay = 0.0
     @Published var panel: PlaybackPanel? { didSet { windowStateChanged?() } }
-    @Published var showsRemaining = false
     @Published var sidebar: PlayerSidebar? { didSet { windowStateChanged?() } }
     @Published var dropHint: String?
     @Published private(set) var controlsVisible = true { didSet { windowStateChanged?() } }
