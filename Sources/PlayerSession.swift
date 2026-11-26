@@ -308,6 +308,10 @@ final class PlayerSession: ObservableObject {
         engine?.seek(position)
         return position
     }
+    func skip(by seconds: Int) {
+        guard let destination = seek(to: position + Double(seconds)) else { return }
+        showFeedback("\(timecode(destination)) / \(timecode(duration))")
+    }
     func setVideoBrightness(_ multiplier: Int) {
         guard Self.brightnessRange.contains(multiplier), multiplier != videoBrightness else { return }
         videoBrightness = multiplier

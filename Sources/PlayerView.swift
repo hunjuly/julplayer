@@ -381,7 +381,7 @@ private struct Controls: View {
         let key = (number == 60 ? "⌥" : "") + (backwards ? "←" : "→")
         let label = "\(number)초 \(backwards ? "뒤로" : "앞으로") (\(key))"
         return Button {
-            session.seek(to: session.position + Double(seconds))
+            session.skip(by: seconds)
         } label: {
             Group {
                 if number == 10 {

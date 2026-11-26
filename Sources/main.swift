@@ -557,15 +557,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDeleg
     @objc private func togglePlay() {
         if let playing = session.togglePlay() { session.showFeedback(playing ? "재생" : "일시 정지") }
     }
-    private func skip(_ seconds: Int) {
-        if let position = session.seek(to: session.position + Double(seconds)) {
-            session.showFeedback("\(abs(seconds))초 \(seconds < 0 ? "뒤로" : "앞으로") · \(timecode(position))")
-        }
-    }
-    @objc private func backward() { skip(-10) }
-    @objc private func forward() { skip(10) }
-    @objc private func back60() { skip(-60) }
-    @objc private func forward60() { skip(60) }
+    @objc private func backward() { session.skip(by: -10) }
+    @objc private func forward() { session.skip(by: 10) }
+    @objc private func back60() { session.skip(by: -60) }
+    @objc private func forward60() { session.skip(by: 60) }
     @objc private func toggleMute() {
         session.toggleMute()
         session.showFeedback(session.volume == 0 ? "음소거" : "음소거 해제 · 음량 \(session.volumePercent)%")
