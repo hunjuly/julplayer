@@ -81,8 +81,8 @@ struct PlaybackControlLayout: Equatable {
         [.brightness, .audio, .subtitles, .workInfo, .trash]
     ]
     private static let priorities: [[Item]] = [
-        [.back10, .ahead10], [.brightness], [.previous, .next], [.back60, .ahead60],
-        [.mute], [.subtitles], [.workInfo], [.audio], [.trash], [.volume]
+        [.back10, .ahead10], [.brightness], [.previous, .next], [.mute], [.subtitles],
+        [.workInfo], [.audio], [.trash], [.volume], [.back60, .ahead60]
     ]
 
     let sound, transport, options: [Item]

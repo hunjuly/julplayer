@@ -340,10 +340,10 @@ private struct Controls: View {
             }
         case .previous: fileButton(-1)
         case .next: fileButton(1)
-        case .back60: seekButton(-60, symbol: "arrow.left")
-        case .back10: seekButton(-10, symbol: "gobackward")
-        case .ahead10: seekButton(10, symbol: "goforward")
-        case .ahead60: seekButton(60, symbol: "arrow.right")
+        case .back60: seekButton(-60)
+        case .back10: seekButton(-10)
+        case .ahead10: seekButton(10)
+        case .ahead60: seekButton(60)
         case .play:
             let label = session.playing ? "일시 정지" : "재생"
             Button { session.togglePlay() } label: {
@@ -365,7 +365,7 @@ private struct Controls: View {
             .footerShadow()
     }
 
-    private func seekButton(_ seconds: Int, symbol: String) -> some View {
+    private func seekButton(_ seconds: Int) -> some View {
         let backwards = seconds < 0
         let number = abs(seconds)
         let key = (number == 60 ? "⌥" : "") + (backwards ? "←" : "→")
@@ -373,12 +373,40 @@ private struct Controls: View {
         return Button {
             session.seek(to: session.position + Double(seconds))
         } label: {
-            Image(systemName: symbol)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, minHeight: 32)
+            Group {
+                if number == 10 {
+                    HalfCircleArrow().scaleEffect(x: backwards ? -1 : 1, y: 1)
+                } else {
+                    Image(systemName: backwards ? "gobackward" : "goforward")
+                        .font(.system(size: 15, weight: .medium))
+                }
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, minHeight: 32)
         }
         .buttonStyle(HUDButtonStyle()).help(label).accessibilityLabel(label)
+    }
+}
+
+private struct HalfCircleArrow: View {
+    var body: some View {
+        Canvas { context, _ in
+            context.translateBy(x: 8.35, y: 8.7)
+            context.rotate(by: .degrees(35))
+            let radius: CGFloat = 6
+            var arc = Path()
+            arc.addArc(center: .zero, radius: radius, startAngle: .degrees(90), endAngle: .degrees(270), clockwise: false)
+            context.stroke(arc, with: .foreground, style: StrokeStyle(lineWidth: 1.55, lineCap: .round))
+
+            context.translateBy(x: 0, y: -radius)
+            var head = Path()
+            head.move(to: CGPoint(x: -0.4, y: -2.4))
+            head.addLine(to: CGPoint(x: 3.25, y: 0))
+            head.addLine(to: CGPoint(x: -0.4, y: 2.4))
+            head.closeSubpath()
+            context.fill(head, with: .foreground)
+        }
+        .frame(width: 16, height: 16)
     }
 }
 
