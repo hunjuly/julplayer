@@ -77,6 +77,7 @@ static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
     BOOL _brightnessUsesPQ;
     BOOL _lastDisplayHDR, _needsOutput, _awaitingFirstFrame;
     int64_t _entry;
+    uint64_t _seekSerial, _pendingSeekReply;
     BOOL _loaded;
     NSString *_requestedPath;
 }
@@ -318,6 +319,9 @@ static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
 - (BOOL)load:(NSString *)path paused:(BOOL)paused {
     if (!_mpv) return NO;
     _loaded = NO;
+    _pendingSeekReply = 0;
+    CMTimebaseSetRate(_clock,0);
+    CMTimebaseSetTime(_clock,kCMTimeZero);
     _needsOutput = YES; _awaitingFirstFrame = YES;
     _requestedPath = [path copy];
     dispatch_sync(_queue, ^{ [self clearDisplayedImages]; });
@@ -354,15 +358,20 @@ static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
                 mpv_event_end_file *end = event->data;
                 if (end->playlist_entry_id != _entry) break;
                 if (end->reason == MPV_END_FILE_REASON_EOF) {
+                    CMTimebaseSetRate(_clock,0);
                     _loaded = NO;
                     out[@"fileEnded"] = @YES;
                     out[@"playing"] = @NO;
                 } else if (end->reason == MPV_END_FILE_REASON_ERROR) {
+                    CMTimebaseSetRate(_clock,0);
                     _loaded = NO;
                     out[@"error"] = @(mpv_error_string(end->error));
                 }
                 break;
             }
+            case MPV_EVENT_COMMAND_REPLY:
+                if (event->reply_userdata == _pendingSeekReply) _pendingSeekReply = 0;
+                break;
             case MPV_EVENT_VIDEO_RECONFIG: _needsOutput = YES; break;
             case MPV_EVENT_PLAYBACK_RESTART:
                 // FILE_LOADED can still report the previous file's video-out-params.
@@ -406,16 +415,22 @@ static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
     }
     if (dirty) out[@"tracks"] = [self trackList];
     double time = 0, duration = 0;
-    int paused = 1, eof = 0;
-    if (mpv_get_property(_mpv,"time-pos",MPV_FORMAT_DOUBLE,&time) >= 0) out[@"position"] = @(time);
+    int paused = 1, eof = 0, seeking = 0;
+    BOOL hasTime = mpv_get_property(_mpv,"time-pos",MPV_FORMAT_DOUBLE,&time) >= 0;
+    mpv_get_property(_mpv,"seeking",MPV_FORMAT_FLAG,&seeking);
+    BOOL timelineReady = hasTime && !_pendingSeekReply && !seeking && !_awaitingFirstFrame;
+    if (timelineReady) out[@"position"] = @(time);
     if (mpv_get_property(_mpv,"duration",MPV_FORMAT_DOUBLE,&duration) >= 0) out[@"duration"] = @(duration);
     mpv_get_property(_mpv,"pause",MPV_FORMAT_FLAG,&paused);
-    if (mpv_get_property(_mpv,"eof-reached",MPV_FORMAT_FLAG,&eof) >= 0) out[@"eof"] = @(eof != 0);
+    if (mpv_get_property(_mpv,"eof-reached",MPV_FORMAT_FLAG,&eof) >= 0 && timelineReady) out[@"eof"] = @(eof != 0);
     out[@"playing"] = @(!paused && !eof);
     double rate = paused || eof ? 0 : 1;
-    if (fabs(CMTimeGetSeconds(CMTimebaseGetTime(_clock)) - time) > 0.20 || CMTimebaseGetRate(_clock) != rate) {
-        CMTimebaseSetTime(_clock,CMTimeMakeWithSeconds(time,1000000));
-        CMTimebaseSetRate(_clock,rate);
+    if (timelineReady) {
+        if (fabs(CMTimeGetSeconds(CMTimebaseGetTime(_clock)) - time) > 0.20 || CMTimebaseGetRate(_clock) != rate) {
+            CMTimebaseSetTime(_clock,CMTimeMakeWithSeconds(time,1000000));
+            CMTimebaseSetRate(_clock,rate);
+        }
+        out[@"timelineReady"] = @YES;
     }
     return out;
 }
@@ -436,7 +451,10 @@ static void setLayerRange(AVSampleBufferDisplayLayer *layer, BOOL hdr) {
 - (void)seek:(double)seconds {
     if (!_mpv) return;
     const char *args[] = {"seek",[@(seconds).stringValue UTF8String],"absolute+exact",NULL};
-    mpv_command_async(_mpv,0,args);
+    uint64_t request = ++_seekSerial;
+    if (mpv_command_async(_mpv,request,args) < 0) return;
+    _pendingSeekReply = request;
+    CMTimebaseSetRate(_clock,0);
     CMTimebaseSetTime(_clock,CMTimeMakeWithSeconds(seconds,1000000));
 }
 - (BOOL)setNumber:(double)value forOption:(NSString *)option {

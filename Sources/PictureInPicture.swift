@@ -202,7 +202,7 @@ final class PictureInPicture: NSObject, @preconcurrency AVPictureInPictureContro
         attachPanelOutputIfNeeded()
     }
     func pictureInPictureController(_ controller: AVPictureInPictureController, skipByInterval skipInterval: CMTime, completion: @escaping () -> Void) {
-        if let session { session.seek(to: session.position + skipInterval.seconds) }
-        completion()
+        guard let session else { completion(); return }
+        session.seek(to: session.position + skipInterval.seconds, completion: completion)
     }
 }

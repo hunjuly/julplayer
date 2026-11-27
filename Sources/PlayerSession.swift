@@ -142,13 +142,15 @@ final class PlayerSession: ObservableObject {
     private static let controlsTimeout: TimeInterval = 2
     private var lastPointerActivity = -TimeInterval.infinity
     private var lastSeek: TimeInterval = 0
+    private var seekCompletions: [() -> Void] = []
     private var noticeEnds = TimeInterval.infinity
     private var timer: Timer?
     private var playbackActivity: NSObjectProtocol?
     private var folderScan: Task<Void, Never>?
     // mpv can pause itself on the last frame before the next poll reports EOF.
     private var playRequested = false
-    private var ended = false
+    private enum EndState { case none, reached, playlistFinished }
+    private var endState = EndState.none
     private var manualSubs: [URL: [URL]] = [:]
     private var pendingSubtitles = [(url: URL, select: Bool)]()
     private var explicitSubtitleID: Int?
@@ -193,6 +195,7 @@ final class PlayerSession: ObservableObject {
         loaded = false
         setPlayingUI(false)
         pip?.shutdown()
+        finishPendingSeeks()
         engine?.shutdown()
     }
     func pointerMoved() {
@@ -220,14 +223,14 @@ final class PlayerSession: ObservableObject {
             show("선택한 영상 밝기를 적용할 수 없어 원본 밝기로 재생합니다.")
         }
         if let error = changes["error"] as? String {
-            playRequested = false; ended = false; loaded = false; videoDisplaySize = nil; setPlayingUI(false)
+            playRequested = false; endState = .none; loaded = false; videoDisplaySize = nil; setPlayingUI(false)
             sourceIsHDR = false
             show("재생할 수 없습니다. \(current.title) (\(error))", seconds: 12)
-            pip?.invalidate(); return
+            pip?.invalidate(); finishPendingSeeks(); return
         }
         let justLoaded = changes["loaded"] as? Bool == true
         if justLoaded {
-            loaded = true; ended = false
+            loaded = true; endState = .none
             attachSidecars(for: current.url, ticket: fileTicket)
             pip?.invalidate()
         }
@@ -252,12 +255,16 @@ final class PlayerSession: ObservableObject {
         if let actual = changes["playing"] as? Bool { setPlayingUI(actual) }
         if changes["fileEnded"] as? Bool == true {
             loaded = false
-            ended = true
+            if endState == .none { endState = .reached }
             pip?.invalidate()
-        } else if !scrubbing, now - lastSeek > 0.25, let eof = changes["eof"] as? Bool {
-            ended = eof
+        } else if endState == .none, !scrubbing, now - lastSeek > 0.25, changes["eof"] as? Bool == true {
+            endState = .reached
         }
         advanceAfterEnd()
+        if selection == current.id, !justLoaded,
+           changes["timelineReady"] as? Bool == true || changes["fileEnded"] as? Bool == true {
+            finishPendingSeeks()
+        }
         if controlsVisible && !overControls && !scrubbing && panel == nil
             && window?.attachedSheet == nil && now - lastPointerActivity >= Self.controlsTimeout {
             controlsVisible = false
@@ -265,9 +272,14 @@ final class PlayerSession: ObservableObject {
     }
 
     private func advanceAfterEnd() {
-        guard ended, playRequested, !scrubbing else { return }
+        guard endState == .reached, playRequested, !scrubbing else { return }
         if let next = adjacent(1) { select(next) }
-        else if folderScan == nil { playRequested = false }
+        else if folderScan == nil {
+            endState = .playlistFinished
+            playRequested = false
+            if loaded { engine?.setPaused(true) }
+            setPlayingUI(false)
+        }
     }
 
     private func setPlayingUI(_ value: Bool) {
@@ -284,10 +296,14 @@ final class PlayerSession: ObservableObject {
         pip?.invalidate()
     }
     func setPlaying(_ value: Bool) {
-        guard let current else { return }
+        guard let current, value != playRequested else { return }
         playRequested = value
-        if value && ended && !loaded { select(current); return }
-        if value && loaded && (ended || (duration > 0 && position >= duration - 0.08)) { seek(to: 0) }
+        // PiP pauses for a skip and resumes after its completion, even at EOF.
+        if value && endState == .reached { advanceAfterEnd(); return }
+        if value && endState == .playlistFinished {
+            if !loaded { select(current); return }
+            seek(to: 0)
+        }
         if loaded {
             engine?.setPaused(!value)
             setPlayingUI(value)
@@ -301,15 +317,28 @@ final class PlayerSession: ObservableObject {
         return requested
     }
     @discardableResult
-    func seek(to value: Double) -> Double? {
-        guard loaded, duration > 0, value.isFinite else { return nil }
-        ended = false
-        position = min(duration, max(0,value)); lastSeek = ProcessInfo.processInfo.systemUptime
+    func seek(to value: Double, completion: (() -> Void)? = nil) -> Double? {
+        guard loaded, duration > 0, value.isFinite else { completion?(); return nil }
+        if let completion { seekCompletions.append(completion) }
+        let destination = min(duration, max(0, value))
+        if destination == duration, playRequested, !scrubbing, let next = adjacent(1) {
+            select(next)
+            return destination
+        }
+        endState = destination == duration ? .reached : .none
+        position = destination; lastSeek = ProcessInfo.processInfo.systemUptime
         engine?.seek(position)
-        return position
+        return destination
+    }
+    private func finishPendingSeeks() {
+        guard !seekCompletions.isEmpty else { return }
+        let completed = seekCompletions
+        seekCompletions.removeAll()
+        completed.forEach { $0() }
     }
     func skip(by seconds: Int) {
-        guard let destination = seek(to: position + Double(seconds)) else { return }
+        let previous = selection
+        guard let destination = seek(to: position + Double(seconds)), selection == previous else { return }
         showFeedback("\(timecode(destination)) / \(timecode(duration))")
     }
     func setVideoBrightness(_ multiplier: Int) {
@@ -416,16 +445,18 @@ final class PlayerSession: ObservableObject {
         } else if selection == nil {
             controlsVisible = ProcessInfo.processInfo.systemUptime - lastPointerActivity < Self.controlsTimeout
         }
-        loaded = false; ended = false; setPlayingUI(false); selection = clip?.id
+        loaded = false; endState = .none; setPlayingUI(false); selection = clip?.id
         position = 0; lastSeek = 0; streams = []; subtitleDelay = 0; audioDelay = 0; panel = nil
         overControls = false
         if engine != nil { notice = nil }
-        selectionDidChange?(); pip?.invalidate()
-        guard let clip else { pip?.stop(); engine?.stop(); return }
+        selectionDidChange?()
+        guard let clip else { pip?.stop(); engine?.stop(); pip?.invalidate(); finishPendingSeeks(); return }
         if let engine, !engine.load(clip.url.path, paused: true) {
             playRequested = false
             show("파일을 열 수 없습니다. \(clip.title)")
+            finishPendingSeeks()
         }
+        pip?.invalidate()
     }
     func adjacent(_ offset: Int) -> Clip? {
         guard let i = clips.firstIndex(where: { $0.id == selection }), clips.indices.contains(i+offset) else { return nil }
