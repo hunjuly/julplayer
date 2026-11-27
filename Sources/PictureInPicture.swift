@@ -46,6 +46,13 @@ final class PictureInPicture: NSObject, @preconcurrency AVPictureInPictureContro
     private var previouslyVisiblePanels: Set<ObjectIdentifier> = []
     private var minimizedPlayer = false
     private var returnToFullScreen = false
+    var isSupported: Bool { controller != nil }
+    var canStart: Bool {
+        guard controller?.isPictureInPicturePossible == true, let session, session.loaded, session.videoDisplaySize != nil,
+              let layer = session.engine?.displayLayer, layer.superlayer != nil, !layer.bounds.isEmpty else { return false }
+        if #available(macOS 14.4, *) { return layer.isReadyForDisplay }
+        return true
+    }
 
     init(session: PlayerSession, layer: AVSampleBufferDisplayLayer) {
         self.session = session
@@ -88,7 +95,7 @@ final class PictureInPicture: NSObject, @preconcurrency AVPictureInPictureContro
     func toggle() {
         if phase == .active { stop(); return }
         guard phase == .idle else { return }
-        guard controller?.isPictureInPicturePossible == true, session?.loaded == true else {
+        guard canStart else {
             session?.show("영상이 준비되면 화면 속 화면을 시작할 수 있습니다.")
             return
         }
@@ -112,7 +119,7 @@ final class PictureInPicture: NSObject, @preconcurrency AVPictureInPictureContro
     }
 
     private func start() {
-        guard let controller, controller.isPictureInPicturePossible, session?.loaded == true else {
+        guard let controller, canStart else {
             phase = .idle
             restoreFullScreenIfNeeded()
             session?.show("영상이 준비되면 화면 속 화면을 시작할 수 있습니다.")

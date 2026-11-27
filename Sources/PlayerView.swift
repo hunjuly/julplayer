@@ -30,18 +30,29 @@ struct PlayerView: View {
             HStack(spacing: 0) {
                 video
                     .ignoresSafeArea(.container, edges: .top)
-                    .accessibilityHidden(session.sidebar != nil && !inline)
-                if let sidebar = session.sidebar, inline {
+                    .accessibilityHidden(session.sidebar == .captions && !inline)
+                if session.sidebar == .captions, inline {
                     Divider().frame(width: 1)
-                    sidebarView(sidebar)
+                    captions
                 }
             }
             .overlay {
-                if let sidebar = session.sidebar, !inline {
+                if session.sidebar == .captions, !inline {
                     ZStack(alignment: .trailing) {
                         Color.black.opacity(0.45).onTapGesture { session.sidebar = nil }
-                        sidebarView(sidebar)
+                        captions
                     }
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if session.sidebar == .playlist {
+                    let footer = PlaybackControlLayout(size: area.size, sourceIsHDR: session.sourceIsHDR).barHeight
+                    Playlist(session: session)
+                        .frame(width: min(PlayerWindowLayout.sidebarWidth, area.size.width - 16),
+                               height: min(Playlist.height(for: session.clips.count), max(0, area.size.height - footer - 16)))
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+                        .background(PlaylistHitArea(session: session))
+                        .padding(8)
                 }
             }
             .overlay(alignment: .top) {
@@ -84,15 +95,10 @@ struct PlayerView: View {
         .preferredColorScheme(.dark)
     }
 
-    private func sidebarView(_ sidebar: PlayerSidebar) -> some View {
-        Group {
-            switch sidebar {
-            case .playlist: Playlist(session: session)
-            case .captions: CaptionSidebar(session: session, queue: session.captionQueue)
-            }
-        }
-        .frame(width: PlayerWindowLayout.sidebarWidth)
-        .background(Color(red: 0.09, green: 0.095, blue: 0.105))
+    private var captions: some View {
+        CaptionSidebar(session: session, queue: session.captionQueue)
+            .frame(width: PlayerWindowLayout.sidebarWidth)
+            .background(Color(red: 0.09, green: 0.095, blue: 0.105))
     }
 
     private var video: some View {
@@ -339,15 +345,6 @@ private struct Controls: View {
         case .subtitles:
             let on = session.streams.contains { $0.kind == .subtitle && $0.selected }
             IconControl(on ? "captions.bubble.fill" : "captions.bubble", label: "자막 스트림 및 싱크") { session.panel = .stream(.subtitle) }
-        case .workInfo:
-            IconControl("info.circle", label: "작품 정보 (I)") { session.openWorkInfo?() }
-        case .trash:
-            HStack(spacing: 0) {
-                Divider().frame(height: 15)
-                Spacer(minLength: 0)
-                IconControl("trash", label: "현재 영상과 자막 삭제 (⌫)", size: 15) { session.deleteCurrent() }
-                    .disabled(session.deletionInProgress)
-            }
         case .previous: fileButton(-1)
         case .next: fileButton(1)
         case .back60: seekButton(-60)
@@ -624,31 +621,49 @@ private struct ChoiceRow: View {
     }
 }
 
+private struct PlaylistHitArea: NSViewRepresentable {
+    let session: PlayerSession
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        session.playlistArea = view
+        return view
+    }
+    func updateNSView(_ view: NSView, context: Context) {}
+}
+
 private struct Playlist: View {
     @ObservedObject var session: PlayerSession
+    private static let rowHeight: CGFloat = 30, spacing: CGFloat = 2, inset: CGFloat = 6
+
+    static func height(for count: Int) -> CGFloat {
+        CGFloat(max(1, count)) * rowHeight + CGFloat(max(0, count - 1)) * spacing + 2 * inset
+    }
 
     var body: some View {
         ScrollViewReader { reader in
             ScrollView {
-                LazyVStack(spacing: 2) {
+                LazyVStack(spacing: Self.spacing) {
                     ForEach(session.clips) { clip in
                         let selected = session.selection == clip.id
                         let name = clip.url.lastPathComponent
-                        Button { session.select(clip) } label: {
+                        Button {
+                            session.dismissPlaylist()
+                            if session.selection != clip.id { session.select(clip) }
+                        } label: {
                             HStack(spacing: 8) {
                                 Text(name).lineLimit(1).truncationMode(.middle)
                                 Spacer(minLength: 0)
                                 if selected { Image(systemName: "checkmark").foregroundStyle(amber) }
                             }
                             .font(.system(size: 12, weight: selected ? .semibold : .regular))
-                            .padding(.horizontal, 9).frame(height: 30)
+                            .padding(.horizontal, 9).frame(height: Self.rowHeight)
                             .background(selected ? .white.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 6))
                         }
                         .buttonStyle(HUDButtonStyle()).help(name)
                         .accessibilityLabel(name).accessibilityAddTraits(selected ? .isSelected : [])
                     }
                 }
-                .padding(6)
+                .padding(Self.inset)
             }
             .onAppear { if let id = session.selection { reader.scrollTo(id, anchor: .center) } }
             .onChange(of: session.selection) { id in if let id { reader.scrollTo(id, anchor: .center) } }

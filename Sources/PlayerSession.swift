@@ -106,13 +106,10 @@ final class PlayerSession: ObservableObject {
     @Published var sidebar: PlayerSidebar? { didSet { windowStateChanged?() } }
     @Published var dropHint: String?
     @Published private(set) var controlsVisible = true { didSet { windowStateChanged?() } }
-    @Published var pinWhenPlaying = UserDefaults.standard.bool(forKey: "pinWhenPlaying") {
-        didSet { UserDefaults.standard.set(pinWhenPlaying, forKey: "pinWhenPlaying"); windowStateChanged?() }
-    }
     @Published var pipActive = false { didSet { windowStateChanged?() } }
     @Published private(set) var notice: String?
     @Published private(set) var loaded = false
-    @Published private(set) var deletionInProgress = false
+    @Published private(set) var deletionInProgress = false { didSet { windowStateChanged?() } }
     @Published var smallPictureSize: CGSize?
 
     lazy var captionQueue = CaptionQueue(defaults: defaults) { [weak self] movie, output, original in
@@ -122,11 +119,11 @@ final class PlayerSession: ObservableObject {
         showFeedback("AI 자막 준비됨")
     }
     var openAISettings: (() -> Void)?
-    var openWorkInfo: (() -> Void)?
     var selectionDidChange: (() -> Void)?
     var videoSizeDidChange: (() -> Void)?
     var windowStateChanged: (() -> Void)?
     weak var window: NSWindow?
+    weak var playlistArea: NSView?
     @Published private(set) var videoDisplaySize: CGSize?
     var current: Clip? { clips.first { $0.id == selection } }
     var duration: Double { current?.duration ?? 0 }
@@ -507,6 +504,9 @@ final class PlayerSession: ObservableObject {
     func showCaptionQueue() {
         panel = nil
         sidebar = .captions
+    }
+    func dismissPlaylist() {
+        if sidebar == .playlist { sidebar = nil }
     }
 
     private func addSubtitles(_ urls: [URL], select: Bool = true) {

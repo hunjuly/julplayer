@@ -12,13 +12,13 @@ enum PlaybackControlLayoutTests {
             let wide = PlaybackControlLayout(size: CGSize(width: 960, height: 540), sourceIsHDR: hdr)
             let wider = PlaybackControlLayout(size: CGSize(width: 1280, height: 720), sourceIsHDR: hdr)
             let stacked = PlaybackControlLayout(size: CGSize(width: 550, height: 300), sourceIsHDR: hdr)
-            let compact = PlaybackControlLayout(size: CGSize(width: 510, height: 300), sourceIsHDR: hdr)
-            let expected: [PlaybackControlLayout.Item] = [.audio, .subtitles, .workInfo, .trash]
+            let compact = PlaybackControlLayout(size: CGSize(width: 430, height: 300), sourceIsHDR: hdr)
+            let expected: [PlaybackControlLayout.Item] = [.audio, .subtitles]
             precondition(!wide.stackedFooter && stacked.stackedFooter)
             precondition(wide.leadingSpan == wide.trailingSpan && wide.leadingSpan == wider.leadingSpan)
             precondition(wider.leadingSpan == wider.trailingSpan)
             let fullTransport: [PlaybackControlLayout.Item] = [.previous, .back60, .back10, .play, .ahead10, .ahead60, .next]
-            precondition(wide.transport == fullTransport)
+            precondition(wide.transport == fullTransport && stacked.transport == fullTransport)
             precondition(compact.transport == [.previous, .back10, .play, .ahead10, .next] && compact.sound == [.mute, .volume])
             for layout in [wide, stacked, compact] {
                 precondition(layout.options == (hdr ? [.brightness] : []) + expected)
