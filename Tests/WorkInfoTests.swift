@@ -20,7 +20,7 @@ enum WorkInfoTests {
         for rating in [score, nil] {
             let work = WorkRecord(id: "test", title: "Example", aliases: [], year: nil, format: "", rating: rating,
                                   fields: [("장르", "드라마")], synopsis: "Original synopsis.", sources: [])
-            let text = work.markdown(summary: work.synopsis)
+            let text = work.markdown()
             let header = "# Example\n\n**평점**  \(rating ?? WorkInfoDocument.noRating)\n\n"
             precondition(text.hasPrefix(header) && WorkInfoDocument(text).rating == rating)
             let korean = try SavedIntroduction.adding("한국어 소개.", to: text, expected: work.synopsis)
@@ -28,8 +28,54 @@ enum WorkInfoTests {
         }
     }
 
+    static func checkGuides() throws {
+        let review = URL(string: "https://example.org/review")!
+        let guide = WorkGuide(synopsis: "두 사람의 출발점.\n\n초반의 분위기.", verdict: "느린 호흡을 좋아한다면 볼 만하다.",
+                              craft: "긴 쇼트가 관찰할 시간을 준다.", review: nil, spoiler: "결말에 관한 해석.", sources: [review])
+        var work = WorkRecord(id: "test", title: "Example", aliases: [], year: 2020, format: "영화", rating: "8/10",
+                              fields: [("출시 연도", "2020년")], synopsis: "Original synopsis.", sources: [review])
+        let raw = work.markdown()
+        work.guide = guide
+        let rich = work.markdown()
+        let parsed = WorkInfoDocument(rich)
+        precondition(parsed.hasGuide && parsed.rating == "8/10" && parsed.catalogueFacts == ["- **출시 연도**  2020년"])
+        precondition(parsed.bodyLines.firstIndex(of: WorkGuide.verdictHeading)! < parsed.bodyLines.firstIndex(of: "## 줄거리와 분위기")!)
+        precondition(!parsed.bodyLines.contains(guide.spoiler!) && parsed.spoilerLines.contains(guide.spoiler!))
+        precondition(parsed.sources == [review])
+        precondition(rich.hasSuffix("## 스포일러 주의\n\n결말에 관한 해석.\n"))
+        precondition(rich.components(separatedBy: review.absoluteString).count == 2)
+        precondition(WorkInfoDocument(raw).spoilerLines.isEmpty)
+
+        for synopsis in ["Original synopsis.", "내가 작성한 기존 소개."] {
+            let old = raw.replacingOccurrences(of: "Original synopsis.", with: synopsis)
+            let notes = "\n## 메모\n\n직접 쓴 메모.\n"
+            let crlf = (old + notes).replacingOccurrences(of: "\n", with: "\r\n")
+            let updated = try guide.adding(to: crlf, title: "Example", original: synopsis)
+            let lf = updated.replacingOccurrences(of: "\r\n", with: "\n")
+            precondition(!lf.contains("\r") && !updated.replacingOccurrences(of: "\r\n", with: "").contains("\n"))
+            precondition(lf.contains(notes) && lf.contains("## 줄거리와 분위기\n\n" + guide.synopsis))
+            let heading = synopsis == "Original synopsis." ? "## 원문 소개" : "## 기존 소개"
+            precondition(lf.contains(heading + "\n\n" + synopsis) && lf.hasSuffix("## 스포일러 주의\n\n결말에 관한 해석.\n"))
+            let repeated = try guide.adding(to: updated, title: "Example", original: synopsis)
+            precondition(repeated == updated)
+        }
+        let quiet = WorkGuide(synopsis: "소개", verdict: "판단", craft: "연출", review: nil, spoiler: nil, sources: [])
+        let noSpoiler = try quiet.adding(to: raw, title: "Example", original: work.synopsis)
+        precondition(!noSpoiler.contains(WorkGuide.spoilerHeading))
+        let annotated = raw + "\n## 스포일러 주의\n\n직접 쓴 결말 메모.\n"
+        let withBoth = try guide.adding(to: annotated, title: "Example", original: work.synopsis)
+        let spoilers = WorkInfoDocument(withBoth).spoilerLines
+        precondition(spoilers.contains("직접 쓴 결말 메모.") && spoilers.contains(guide.spoiler!))
+        precondition(withBoth.components(separatedBy: WorkGuide.spoilerHeading).count == 2)
+        do {
+            _ = try guide.adding(to: raw, title: "Example", original: "이전 버전")
+            preconditionFailure("Changed introduction was overwritten")
+        } catch is MediaToolError {}
+    }
+
     static func main() throws {
         try checkRatings()
+        try checkGuides()
         let files = FileManager.default
         let base = CommandLine.arguments.dropFirst().first.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? files.temporaryDirectory
         let root = base.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -88,7 +134,7 @@ enum WorkInfoTests {
         }
         let saved = try SidecarFile.read(url)
         precondition(saved == translated && translated.contains("## 원문 소개\n\nOriginal synopsis.") && translated.hasSuffix(notes))
-        precondition(SavedIntroduction(translated) == nil)
+        precondition(SavedIntroduction(translated)?.needsTranslation == false)
         let afterUpdate = try visibleFiles()
         precondition(afterUpdate.contains(url.lastPathComponent))
         print("Work information regression tests passed.")

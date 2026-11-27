@@ -33,7 +33,12 @@ final class WorkInfoModel: ObservableObject {
         error = ""
         busy = true
         task = Task {
-            do { try await operation() } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            do { try await operation() } catch {
+                if !Task.isCancelled {
+                    self.status = ""
+                    self.error = error.localizedDescription
+                }
+            }
             if !Task.isCancelled { self.busy = false }
         }
     }
@@ -95,6 +100,7 @@ final class WorkInfoModel: ObservableObject {
         let webQuery = (query == identity.search ? identity.year : nil).map { query + " " + String($0) } ?? query
         if web {
             guard let credential else { throw MediaToolError("웹으로 작품을 찾으려면 OpenAI 설정에 API 키를 등록해 주세요.") }
+            status = "작성 중"
             results = try await WorkLookup.web(query: webQuery, key: credential, api: api)
         } else {
             status = "AniList에서 작품 찾는 중"
@@ -124,7 +130,7 @@ final class WorkInfoModel: ObservableObject {
             }
             if results.isEmpty, let credential {
                 try Task.checkCancellation()
-                status = "웹에서 작품과 출처 확인 중"
+                status = "작성 중"
                 results = try await WorkLookup.web(query: webQuery, key: credential, api: api)
             }
         }
@@ -141,25 +147,33 @@ final class WorkInfoModel: ObservableObject {
     }
 
     func choose(_ record: WorkRecord, original: Bool = false) {
-        run("작품 소개 정리 중") { try await self.finish(record, credential: original ? nil : try self.key()) }
+        run("작성 중") { try await self.finish(record, credential: original ? nil : try self.key()) }
     }
 
-    var canAddKorean: Bool { savedURL != nil && SavedIntroduction(document) != nil }
+    var guideActionTitle: String? {
+        let saved = WorkInfoDocument(document)
+        guard savedURL != nil, saved.title != nil, !saved.hasGuide else { return nil }
+        return SavedIntroduction(document)?.needsTranslation == true ? "한국어 소개 추가" : "상세 소개 추가"
+    }
 
-    func addKorean(settings: @escaping () -> Void) {
-        guard let url = savedURL, let introduction = SavedIntroduction(document) else { return }
-        run("한국어 소개 작성 중") {
+    func addGuide(settings: @escaping () -> Void) {
+        let saved = WorkInfoDocument(document)
+        guard let url = savedURL, let title = saved.title, let identity, !saved.hasGuide else { return }
+        let introduction = SavedIntroduction(document)
+        let sourceSynopsis = introduction.flatMap { $0.needsTranslation ? $0.original : nil } ?? ""
+        run("작성 중") {
             guard let credential = try self.key() else {
                 self.status = ""
                 settings()
                 return
             }
-            let korean = try await WorkLookup.koreanSummary(
-                title: introduction.title, synopsis: introduction.original, key: credential, api: self.api)
+            let guide = try await WorkLookup.guide(
+                title: title, year: identity.year, season: identity.season, synopsis: sourceSynopsis,
+                facts: saved.catalogueFacts, sources: saved.sources, key: credential, api: self.api)
             try Task.checkCancellation()
             let updated = try await Task.detached(priority: .userInitiated) {
                 try SidecarFile.update(url) { current in
-                    try SavedIntroduction.adding(korean, to: current, expected: introduction.original)
+                    try guide.adding(to: current, title: title, original: introduction?.original)
                 }
             }.value
             try Task.checkCancellation()
@@ -171,14 +185,15 @@ final class WorkInfoModel: ObservableObject {
     private func finish(_ record: WorkRecord, credential: String?) async throws {
         guard let identity else { return }
         let target = identity.document
-        var summary = record.synopsis
-        if record.fromCatalogue, let credential {
-            status = "스포일러 없는 한국어 소개 작성 중"
-            summary = try await WorkLookup.koreanSummary(
-                title: record.title, synopsis: record.synopsis, facts: record.fields.map { $0.1 }, key: credential, api: api)
+        var selected = record
+        if selected.guide == nil, let credential {
+            status = "작성 중"
+            selected.guide = try await WorkLookup.guide(
+                title: record.title, year: record.year, season: identity.season, synopsis: record.synopsis,
+                facts: record.fields.map { "\($0.0) \($0.1)" }, sources: record.sources, key: credential, api: api)
         }
         try Task.checkCancellation()
-        let content = record.markdown(summary: summary.isEmpty ? "확인된 작품 소개가 없습니다." : summary, season: identity.season)
+        let content = selected.markdown(season: identity.season)
         do {
             // A concurrent lookup or a user's own Markdown takes precedence at publication.
             let saved = try await Task.detached(priority: .userInitiated) {
@@ -304,6 +319,19 @@ private struct WorkRatingLabel: View {
 private struct WorkInfoView: View {
     @ObservedObject var model: WorkInfoModel
     let settings: () -> Void
+
+    private func lines(_ content: [String]) -> some View {
+        ForEach(Array(content.enumerated()), id: \.offset) { _, line in
+            if line.hasPrefix("# ") {
+                Text(String(line.dropFirst(2))).font(.title2.bold())
+            } else if line.hasPrefix("## ") {
+                Text(String(line.dropFirst(3))).font(.headline).padding(.top, 7)
+            } else if !line.isEmpty {
+                workInfoText(line.hasPrefix("- ") ? String(line.dropFirst(2)) : line)
+            }
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if model.savedURL != nil || !model.document.isEmpty {
@@ -314,18 +342,19 @@ private struct WorkInfoView: View {
                             Text(verbatim: title).font(.title2.bold())
                             WorkRatingLabel(rating: document.rating).font(.headline).padding(.bottom, 4)
                         }
-                        ForEach(Array(document.bodyLines.enumerated()), id: \.offset) { _, line in
-                            if line.hasPrefix("# ") {
-                                Text(String(line.dropFirst(2))).font(.title2.bold())
-                            } else if line.hasPrefix("## ") {
-                                Text(String(line.dropFirst(3))).font(.headline).padding(.top, 7)
-                            } else if !line.isEmpty {
-                                let raw = line.hasPrefix("- ") ? String(line.dropFirst(2)) : line
-                                workInfoText(raw)
+                        lines(document.bodyLines)
+                        if document.spoilerLines.contains(where: { !$0.isEmpty }) {
+                            Divider().padding(.top, 7)
+                            DisclosureGroup {
+                                VStack(alignment: .leading, spacing: 7) { lines(document.spoilerLines) }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } label: {
+                                Text("스포일러 주의").font(.headline)
                             }
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                 }
+                .id(model.document)
                 .environment(
                     \.openURL,
                     OpenURLAction { url in
@@ -338,9 +367,10 @@ private struct WorkInfoView: View {
                         Spacer()
                         if model.busy {
                             ProgressView().controlSize(.small)
+                            Text(model.status).font(.caption).foregroundStyle(.secondary)
                             Button("취소", action: model.cancel)
-                        } else if model.canAddKorean {
-                            Button("한국어 소개 추가") { model.addKorean(settings: settings) }
+                        } else if let title = model.guideActionTitle {
+                            Button(title) { model.addGuide(settings: settings) }
                         }
                     }
                 }
