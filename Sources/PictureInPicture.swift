@@ -127,7 +127,7 @@ final class PictureInPicture: NSObject, @preconcurrency AVPictureInPictureContro
         }
         previouslyVisiblePanels = Set(NSApp.windows.compactMap { $0 is NSPanel && $0.isVisible ? ObjectIdentifier($0) : nil })
         phase = .starting
-        session?.setPlaying(true)
+        if let session, !session.callActive { session.setPlaying(true) }
         session?.showFeedback("화면 속 화면 시작")
         controller.startPictureInPicture()
     }

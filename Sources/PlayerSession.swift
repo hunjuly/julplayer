@@ -144,6 +144,9 @@ final class PlayerSession: ObservableObject {
     private var timer: Timer?
     private var playbackActivity: NSObjectProtocol?
     private var folderScan: Task<Void, Never>?
+    private let callMonitor: CallActivityMonitor
+    private(set) var callActive = false
+    private var resumeAfterCall: UUID?
     // mpv can pause itself on the last frame before the next poll reports EOF.
     private var playRequested = false
     private enum EndState { case none, reached, playlistFinished }
@@ -159,8 +162,9 @@ final class PlayerSession: ObservableObject {
     private let defaults: UserDefaults
     private var sidecarsReady = false
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, callMonitor: CallActivityMonitor = CallActivityMonitor()) {
         self.defaults = defaults
+        self.callMonitor = callMonitor
         let initialVolume = 0.68
         defaults.register(defaults: [Self.volumeKey: initialVolume, Self.beforeMuteKey: initialVolume])
         volume = defaults.double(forKey: Self.volumeKey)
@@ -173,6 +177,7 @@ final class PlayerSession: ObservableObject {
 
     func start(opening urls: [URL]) {
         if let engine {
+            callMonitor.start { [weak self] active in self?.callActivityChanged(active) }
             pip = PictureInPicture(session: self, layer: engine.displayLayer)
             _ = engine.setNumber(volume * 100, forOption: "volume")
             _ = engine.setNumber(subtitleSize.scale, forOption: "sub-scale")
@@ -185,6 +190,9 @@ final class PlayerSession: ObservableObject {
         if !urls.isEmpty { openMedia(urls) }
     }
     func finish() {
+        callMonitor.stop()
+        callActive = false
+        resumeAfterCall = nil
         captionQueue.stop()
         timer?.invalidate(); timer = nil
         folderScan?.cancel()
@@ -220,6 +228,7 @@ final class PlayerSession: ObservableObject {
             show("선택한 영상 밝기를 적용할 수 없어 원본 밝기로 재생합니다.")
         }
         if let error = changes["error"] as? String {
+            resumeAfterCall = nil
             playRequested = false; endState = .none; loaded = false; videoDisplaySize = nil; setPlayingUI(false)
             sourceIsHDR = false
             show("재생할 수 없습니다. \(current.title) (\(error))", seconds: 12)
@@ -292,7 +301,21 @@ final class PlayerSession: ObservableObject {
         windowStateChanged?()
         pip?.invalidate()
     }
+    private func callActivityChanged(_ active: Bool) {
+        callActive = active
+        if active {
+            guard playRequested, let selection else { return }
+            setPlaying(false)
+            resumeAfterCall = selection
+            showFeedback("통화로 일시 정지")
+        } else if let interrupted = resumeAfterCall, interrupted == selection {
+            setPlaying(true)
+            showFeedback("통화 종료 · 재생")
+        }
+    }
+
     func setPlaying(_ value: Bool) {
+        resumeAfterCall = nil
         guard let current, value != playRequested else { return }
         playRequested = value
         // PiP pauses for a skip and resumes after its completion, even at EOF.
@@ -433,7 +456,8 @@ final class PlayerSession: ObservableObject {
         sidecarsReady = false
         explicitSubtitleID = nil
         pendingSubtitles.removeAll()
-        playRequested = clip != nil
+        resumeAfterCall = nil
+        playRequested = clip != nil && (!callActive || playRequested)
         videoDisplaySize = nil
         sourceIsHDR = false
         smallPictureSize = nil
@@ -561,7 +585,7 @@ final class PlayerSession: ObservableObject {
               window.attachedSheet == nil else { return }
         deletionInProgress = true
         let movie = clip.url
-        let resumeIfKept = playRequested
+        let resumeIfKept = playRequested || resumeAfterCall == clip.id
         if resumeIfKept { setPlaying(false) }
         let shared = Set(manualSubs.filter { $0.key != movie }.flatMap(\.value).map(\.standardizedFileURL))
         let attached = manualSubs[movie, default: []]
@@ -569,7 +593,10 @@ final class PlayerSession: ObservableObject {
             var deleted = false
             defer {
                 deletionInProgress = false
-                if !deleted && resumeIfKept && selection == clip.id { setPlaying(true) }
+                if !deleted && resumeIfKept && selection == clip.id {
+                    if callActive { resumeAfterCall = clip.id }
+                    else { setPlaying(true) }
+                }
             }
             do {
                 let entries = try await Task.detached(priority: .userInitiated) {
