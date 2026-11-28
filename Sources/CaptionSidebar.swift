@@ -33,13 +33,7 @@ struct CaptionSidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("AI 자막").font(.headline)
-                Spacer()
-                Button { session.sidebar = nil } label: { Image(systemName: "xmark") }
-                    .accessibilityLabel("자막 패널 닫기").help("자막 패널 닫기 (Esc)")
-            }
-            Picker("자막 패널", selection: $showQueue) {
+            Picker("자막 작업", selection: $showQueue) {
                 Text("작업 추가").tag(false)
                 Text("대기열 \(queue.items.filter(\.pending).count)").tag(true)
             }.labelsHidden().pickerStyle(.segmented)

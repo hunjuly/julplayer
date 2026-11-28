@@ -44,7 +44,11 @@ enum PlaybackPanel: Hashable, Identifiable {
     var id: Self { self }
 }
 
-enum PlayerSidebar { case playlist, captions }
+enum PlayerSidebar: String, CaseIterable {
+    case playlist = "재생목록"
+    case info = "작품 정보"
+    case captions = "자막 생성"
+}
 
 struct MediaStream: Identifiable, Equatable {
     let id: Int
@@ -103,7 +107,7 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var subtitleDelay = 0.0
     @Published private(set) var audioDelay = 0.0
     @Published var panel: PlaybackPanel? { didSet { windowStateChanged?() } }
-    @Published var sidebar: PlayerSidebar? { didSet { windowStateChanged?() } }
+    @Published private(set) var sidebar: PlayerSidebar? { didSet { windowStateChanged?() } }
     @Published var dropHint: String?
     @Published private(set) var controlsVisible = true { didSet { windowStateChanged?() } }
     @Published var pipActive = false { didSet { windowStateChanged?() } }
@@ -123,7 +127,7 @@ final class PlayerSession: ObservableObject {
     var videoSizeDidChange: (() -> Void)?
     var windowStateChanged: (() -> Void)?
     weak var window: NSWindow?
-    weak var playlistArea: NSView?
+    weak var sidebarArea: NSView?
     @Published private(set) var videoDisplaySize: CGSize?
     var current: Clip? { clips.first { $0.id == selection } }
     var duration: Double { current?.duration ?? 0 }
@@ -525,12 +529,14 @@ final class PlayerSession: ObservableObject {
         picker.title = "외부 자막 열기"; picker.allowsMultipleSelection = true; picker.allowedContentTypes = LocalMedia.subtitleTypes
         picker.beginSheetModal(for: window) { [weak self] answer in if answer == .OK { self?.addSubtitles(picker.urls) } }
     }
-    func showCaptionQueue() {
-        panel = nil
-        sidebar = .captions
+    func showSidebar(_ tab: PlayerSidebar?) {
+        if tab != nil, panel != nil { panel = nil }
+        guard sidebar != tab else { return }
+        if let window, window.firstResponder is NSTextView { window.makeFirstResponder(window.contentView) }
+        sidebar = tab
     }
     func dismissPlaylist() {
-        if sidebar == .playlist { sidebar = nil }
+        if sidebar == .playlist { showSidebar(nil) }
     }
 
     private func addSubtitles(_ urls: [URL], select: Bool = true) {

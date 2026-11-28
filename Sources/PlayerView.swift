@@ -27,56 +27,52 @@ struct PlayerView: View {
     private var player: some View {
         GeometryReader { area in
             let inline = PlayerWindowLayout.fitsSidebar(in: area.size.width)
-            HStack(spacing: 0) {
-                video
-                    .ignoresSafeArea(.container, edges: .top)
-                    .accessibilityHidden(session.sidebar == .captions && !inline)
-                if session.sidebar == .captions, inline {
-                    Divider().frame(width: 1)
-                    captions
-                }
-            }
-            .overlay {
-                if session.sidebar == .captions, !inline {
-                    ZStack(alignment: .trailing) {
-                        Color.black.opacity(0.45).onTapGesture { session.sidebar = nil }
-                        captions
+            video
+                .ignoresSafeArea(.container, edges: .top)
+                .padding(.trailing, inline && session.sidebar != nil ? PlayerWindowLayout.sidebarSpan : 0)
+                .accessibilityHidden(!inline && session.sidebar != nil)
+                .overlay(alignment: .topLeading) {
+                    if let notice = session.notice {
+                        Text(notice)
+                            .font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                            .lineLimit(3).truncationMode(.middle)
+                            .padding(.horizontal, 9).padding(.vertical, 5)
+                            .background(.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 6))
+                            .padding(12)
+                            .offset(y: session.controlsVisible ? 0 : -area.safeAreaInsets.top)
+                            .allowsHitTesting(false)
+                            .accessibilityIdentifier("playback-message")
                     }
                 }
-            }
-            .overlay(alignment: .topTrailing) {
-                if session.sidebar == .playlist {
-                    let footer = PlaybackControlLayout(size: area.size, sourceIsHDR: session.sourceIsHDR).barHeight
-                    Playlist(session: session)
-                        .frame(width: min(PlayerWindowLayout.sidebarWidth, area.size.width - 16),
-                               height: min(Playlist.height(for: session.clips.count), max(0, area.size.height - footer - 16)))
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
-                        .background(PlaylistHitArea(session: session))
-                        .padding(8)
+                .overlay(alignment: .trailing) {
+                    if let tab = session.sidebar {
+                        ZStack(alignment: .trailing) {
+                            if !inline {
+                                Button { session.showSidebar(nil) } label: {
+                                    Color.black.opacity(0.4).contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain).focusable(false)
+                                .allowsHitTesting(tab != .playlist)
+                                .accessibilityHidden(true)
+                            }
+                            HStack(spacing: 0) {
+                                Divider().frame(width: 1)
+                                PlayerSidebarView(session: session, tab: tab)
+                            }
+                            .frame(width: min(PlayerWindowLayout.sidebarSpan, area.size.width))
+                            .background(SidebarHitArea(session: session))
+                        }
+                    }
                 }
-            }
-            .overlay(alignment: .top) {
-                PanelBackground(atTop: true)
-                    .frame(height: area.safeAreaInsets.top)
-                    .offset(y: -area.safeAreaInsets.top)
-                    .opacity(session.controlsVisible ? 1 : 0)
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: session.controlsVisible)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            }
-            .overlay(alignment: .topLeading) {
-                if let notice = session.notice {
-                    Text(notice)
-                        .font(.system(size: 13, weight: .semibold)).monospacedDigit()
-                        .lineLimit(3).truncationMode(.middle)
-                        .padding(.horizontal, 9).padding(.vertical, 5)
-                        .background(.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 6))
-                        .padding(12)
-                        .offset(y: session.controlsVisible ? 0 : -area.safeAreaInsets.top)
+                .overlay(alignment: .top) {
+                    PanelBackground(atTop: true)
+                        .frame(height: area.safeAreaInsets.top)
+                        .offset(y: -area.safeAreaInsets.top)
+                        .opacity(session.controlsVisible ? 1 : 0)
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: session.controlsVisible)
                         .allowsHitTesting(false)
-                        .accessibilityIdentifier("playback-message")
+                        .accessibilityHidden(true)
                 }
-            }
         }
         .overlay {
             if let hint = session.dropHint {
@@ -93,12 +89,6 @@ struct PlayerView: View {
         }
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
-    }
-
-    private var captions: some View {
-        CaptionSidebar(session: session, queue: session.captionQueue)
-            .frame(width: PlayerWindowLayout.sidebarWidth)
-            .background(Color(red: 0.09, green: 0.095, blue: 0.105))
     }
 
     private var video: some View {
@@ -576,7 +566,7 @@ private struct StreamPanel: View {
                     Button(action: session.chooseSubtitles) {
                         Text("외부 자막 열기").frame(maxWidth: .infinity)
                     }
-                    Button(action: session.showCaptionQueue) {
+                    Button { session.showSidebar(.captions) } label: {
                         Text("AI 자막 생성").frame(maxWidth: .infinity)
                     }
                 }
@@ -621,11 +611,60 @@ private struct ChoiceRow: View {
     }
 }
 
-private struct PlaylistHitArea: NSViewRepresentable {
+private struct PlayerSidebarView: View {
+    @ObservedObject var session: PlayerSession
+    let tab: PlayerSidebar
+    @StateObject private var info = WorkInfoModel()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Picker("오른쪽 패널", selection: Binding(get: { tab }, set: { session.showSidebar($0) })) {
+                    ForEach(PlayerSidebar.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .labelsHidden().pickerStyle(.segmented)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Button { session.showSidebar(nil) } label: {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 22).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .accessibilityLabel("오른쪽 패널 닫기").help("오른쪽 패널 닫기 (Esc)")
+            }
+            .padding(9)
+            Divider()
+            ZStack {
+                ForEach(PlayerSidebar.allCases, id: \.self) { page in
+                    content(for: page)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .opacity(page == tab ? 1 : 0)
+                        .disabled(page != tab)
+                        .allowsHitTesting(page == tab)
+                        .accessibilityHidden(page != tab)
+                }
+            }
+        }
+        .background(Color(red: 0.09, green: 0.095, blue: 0.105))
+        .onAppear { if tab == .info { info.open(movie: session.current?.url) } }
+        .onChange(of: tab) { if $0 == .info { info.open(movie: session.current?.url) } }
+        .onChange(of: session.current?.url) { info.open(movie: tab == .info ? $0 : nil) }
+        .onDisappear { info.cancel() }
+    }
+
+    @ViewBuilder private func content(for page: PlayerSidebar) -> some View {
+        switch page {
+        case .playlist: Playlist(session: session)
+        case .info: WorkInfoView(model: info, settings: { session.openAISettings?() })
+        case .captions: CaptionSidebar(session: session, queue: session.captionQueue)
+        }
+    }
+}
+
+private struct SidebarHitArea: NSViewRepresentable {
     let session: PlayerSession
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        session.playlistArea = view
+        session.sidebarArea = view
         return view
     }
     func updateNSView(_ view: NSView, context: Context) {}
@@ -635,14 +674,13 @@ private struct Playlist: View {
     @ObservedObject var session: PlayerSession
     private static let rowHeight: CGFloat = 30, spacing: CGFloat = 2, inset: CGFloat = 6
 
-    static func height(for count: Int) -> CGFloat {
-        CGFloat(max(1, count)) * rowHeight + CGFloat(max(0, count - 1)) * spacing + 2 * inset
-    }
-
     var body: some View {
         ScrollViewReader { reader in
             ScrollView {
                 LazyVStack(spacing: Self.spacing) {
+                    if session.clips.isEmpty {
+                        Text("재생목록이 비어 있습니다.").foregroundStyle(.secondary).padding(.top, 9)
+                    }
                     ForEach(session.clips) { clip in
                         let selected = session.selection == clip.id
                         let name = clip.url.lastPathComponent

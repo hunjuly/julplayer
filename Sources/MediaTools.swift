@@ -8,8 +8,9 @@ final class WorkInfoModel: ObservableObject {
     @Published private(set) var savedURL: URL?
     @Published private(set) var matches = [WorkRecord]()
     @Published private(set) var busy = false
-    @Published private(set) var status = ""
+    @Published private(set) var status = "작품 정보를 볼 영상을 먼저 열어 주세요."
     @Published private(set) var error = ""
+    private(set) var movie: URL?
     private var identity: WorkIdentity?
     private var task: Task<Void, Never>?
     private let api: MediaAPI
@@ -44,7 +45,9 @@ final class WorkInfoModel: ObservableObject {
     }
 
     func open(movie: URL?) {
+        guard self.movie != movie else { return }
         cancel()
+        self.movie = movie
         identity = nil
         document = ""
         savedURL = nil
@@ -216,66 +219,34 @@ final class WorkInfoModel: ObservableObject {
 }
 
 @MainActor
-final class MediaToolsController: NSObject, NSWindowDelegate {
+final class OpenAISettingsController: NSObject, NSWindowDelegate {
     private let session: PlayerSession
-    let info = WorkInfoModel()
-    private var infoWindow: NSWindow?, settingsWindow: NSWindow?
+    private(set) var window: NSWindow?
     init(session: PlayerSession) { self.session = session }
 
-    private func makeWindow<Content: View>(_ title: String, size: NSSize, minimum: NSSize, content: Content) -> NSWindow {
+    func show() {
+        if let window { window.makeKeyAndOrderFront(nil); return }
+        let size = NSSize(width: 460, height: 255)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .resizable],
             backing: .buffered, defer: false)
-        window.title = title
+        window.title = "OpenAI 설정"
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let host = NSHostingView(rootView: content.buttonStyle(.bordered).preferredColorScheme(.dark))
+        let settings = OpenAISettingsView(queue: session.captionQueue, close: { [weak window] in window?.close() })
+        let host = NSHostingView(rootView: settings.buttonStyle(.bordered).preferredColorScheme(.dark))
         host.sizingOptions = []
         window.contentView = host
-        window.contentMinSize = minimum
+        window.contentMinSize = NSSize(width: 390, height: 245)
         window.setContentSize(size)
         window.center()
         window.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
         window.level = session.window?.level ?? .normal
-        return window
+        self.window = window
+        window.makeKeyAndOrderFront(nil)
     }
 
-    func showInfo() {
-        if infoWindow == nil {
-            infoWindow = makeWindow(
-                "작품 정보", size: NSSize(width: 510, height: 520), minimum: NSSize(width: 350, height: 280),
-                content: WorkInfoView(model: info, settings: { [weak self] in self?.showSettings() }))
-        }
-        if infoWindow?.isVisible != true { info.open(movie: session.current?.url) }
-        infoWindow?.makeKeyAndOrderFront(nil)
-    }
-
-    func showSettings() {
-        if settingsWindow == nil {
-            settingsWindow = makeWindow(
-                "OpenAI 설정", size: NSSize(width: 460, height: 255), minimum: NSSize(width: 390, height: 245),
-                content: OpenAISettingsView(queue: session.captionQueue, close: { [weak self] in self?.settingsWindow?.close() }))
-        }
-        settingsWindow?.makeKeyAndOrderFront(nil)
-    }
-    func setWindowLevel(_ level: NSWindow.Level) {
-        for window in [infoWindow, settingsWindow] { window?.level = level }
-    }
-
-    func selectionChanged() { if infoWindow?.isVisible == true { info.open(movie: session.current?.url) } }
-    func windowWillClose(_ note: Notification) {
-        guard let window = note.object as? NSWindow else { return }
-        if window === infoWindow {
-            info.cancel()
-            infoWindow = nil
-        }
-        if window === settingsWindow { settingsWindow = nil }
-    }
-    func shutdown() {
-        info.cancel()
-        infoWindow?.close()
-        settingsWindow?.close()
-    }
+    func windowWillClose(_ note: Notification) { window = nil }
 }
 
 struct SavedFileRow: View {
@@ -316,7 +287,7 @@ private struct WorkRatingLabel: View {
     }
 }
 
-private struct WorkInfoView: View {
+struct WorkInfoView: View {
     @ObservedObject var model: WorkInfoModel
     let settings: () -> Void
 
@@ -333,90 +304,94 @@ private struct WorkInfoView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if model.savedURL != nil || !model.document.isEmpty {
-                let document = WorkInfoDocument(model.document)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 7) {
-                        if let title = document.title {
-                            Text(verbatim: title).font(.title2.bold())
-                            WorkRatingLabel(rating: document.rating).font(.headline).padding(.bottom, 4)
-                        }
-                        lines(document.bodyLines)
-                        if document.spoilerLines.contains(where: { !$0.isEmpty }) {
-                            Divider().padding(.top, 7)
-                            DisclosureGroup {
-                                VStack(alignment: .leading, spacing: 7) { lines(document.spoilerLines) }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            } label: {
-                                Text("스포일러 주의").font(.headline)
-                            }
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-                }
-                .id(model.document)
-                .environment(
-                    \.openURL,
-                    OpenURLAction { url in
-                        ["https", "http"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
-                    })
-                if let url = model.savedURL {
-                    Divider()
-                    HStack {
-                        SavedFileRow(url: url)
-                        Spacer()
-                        if model.busy {
-                            ProgressView().controlSize(.small)
-                            Text(model.status).font(.caption).foregroundStyle(.secondary)
-                            Button("취소", action: model.cancel)
-                        } else if let title = model.guideActionTitle {
-                            Button(title) { model.addGuide(settings: settings) }
-                        }
-                    }
-                }
-            } else {
-                HStack {
-                    TextField("작품명 또는 원제", text: $model.query).onSubmit { model.search(web: false) }
-                    Button("검색") { model.search(web: false) }.disabled(model.query.isEmpty)
-                    Button("웹 검색") { model.search(web: true) }.disabled(model.query.isEmpty)
-                }
-                if model.busy {
-                    HStack {
-                        ProgressView().controlSize(.small)
-                        Text(model.status)
-                        Spacer()
-                        Button("취소") { model.cancel() }
-                    }
-                } else if !model.status.isEmpty {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                if model.movie == nil {
                     Text(model.status).foregroundStyle(.secondary)
-                }
-                if !model.busy {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(model.matches) { record in
-                                Button {
-                                    model.choose(record)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(record.title).fontWeight(.semibold)
-                                        if let rating = record.rating { WorkRatingLabel(rating: rating).font(.caption) }
-                                        if !record.detail.isEmpty { Text(record.detail).font(.caption).foregroundStyle(.secondary) }
-                                    }.multilineTextAlignment(.leading)
-                                        .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3)
-                                }
-                                if !model.error.isEmpty && record.fromCatalogue {
-                                    Button("AniList 원문으로 저장") { model.choose(record, original: true) }
-                                }
-                            }
-                        }
-                    }
+                } else if model.savedURL != nil || !model.document.isEmpty {
+                    savedDocument
                 } else {
-                    Spacer()
+                    search
                 }
-                Button("OpenAI 설정", action: settings)
+                if !model.error.isEmpty { Text(model.error).foregroundStyle(.orange).textSelection(.enabled) }
             }
-            if !model.error.isEmpty { Text(model.error).foregroundStyle(.orange).textSelection(.enabled) }
-        }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+        }
+        .id(model.document)
+        .buttonStyle(.bordered).controlSize(.small)
+    }
+
+    @ViewBuilder private var savedDocument: some View {
+        let document = WorkInfoDocument(model.document)
+        VStack(alignment: .leading, spacing: 7) {
+            if let title = document.title {
+                Text(verbatim: title).font(.title2.bold())
+                WorkRatingLabel(rating: document.rating).font(.headline).padding(.bottom, 4)
+            }
+            lines(document.bodyLines)
+            if document.spoilerLines.contains(where: { !$0.isEmpty }) {
+                Divider().padding(.top, 7)
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 7) { lines(document.spoilerLines) }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } label: {
+                    Text("스포일러 주의").font(.headline)
+                }
+            }
+        }
+        .textSelection(.enabled)
+        .environment(\.openURL, OpenURLAction { url in
+            ["https", "http"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
+        })
+        if let url = model.savedURL {
+            Divider()
+            SavedFileRow(url: url)
+            if model.busy {
+                progress
+            } else if let title = model.guideActionTitle {
+                Button(title) { model.addGuide(settings: settings) }
+            }
+        }
+    }
+
+    @ViewBuilder private var search: some View {
+        TextField("작품명 또는 원제", text: $model.query).onSubmit { model.search(web: false) }
+        HStack {
+            Button("검색") { model.search(web: false) }
+            Button("웹 검색") { model.search(web: true) }
+        }.disabled(model.query.isEmpty)
+        if model.busy {
+            progress
+        } else {
+            if !model.status.isEmpty { Text(model.status).foregroundStyle(.secondary) }
+            ForEach(model.matches) { record in
+                Button {
+                    model.choose(record)
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(record.title).fontWeight(.semibold)
+                        if let rating = record.rating { WorkRatingLabel(rating: rating).font(.caption) }
+                        if !record.detail.isEmpty { Text(record.detail).font(.caption).foregroundStyle(.secondary) }
+                    }
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3)
+                }
+                if !model.error.isEmpty && record.fromCatalogue {
+                    Button("AniList 원문으로 저장") { model.choose(record, original: true) }
+                }
+            }
+        }
+        Button("OpenAI 설정", action: settings)
+    }
+
+    private var progress: some View {
+        HStack {
+            ProgressView().controlSize(.small)
+            Text(model.status).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button("취소", action: model.cancel)
+        }
     }
 }
 

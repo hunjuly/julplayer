@@ -24,7 +24,7 @@ enum WindowSizePreset: Int, CaseIterable {
 
 enum PlayerWindowLayout {
     static let minimumContent = CGSize(width: 280, height: 158)
-    static let sidebarWidth: CGFloat = 236
+    static let sidebarWidth: CGFloat = 336
     static let sidebarSpan = sidebarWidth + 1
 
     static func fitsSidebar(in width: CGFloat) -> Bool {
